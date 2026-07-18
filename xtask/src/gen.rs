@@ -177,9 +177,41 @@ fn surfaces() -> Vec<Surface> {
         },
         Surface {
             c_file: "parse.y (lexer)",
-            rs_module: "config (planned)",
-            status: "Planned",
-            tests: &[],
+            rs_module: "config::lexer",
+            status: "Implemented — internally tested",
+            tests: &[
+                "test_cursor_peek_bump",
+                "test_cursor_unread",
+                "test_comment_only",
+                "test_comment_at_eof",
+                "test_all_keywords",
+                "test_keyword_case_sensitive",
+                "test_number_positive",
+                "test_number_negative",
+                "test_number_zero",
+                "test_number_i64_min",
+                "test_number_i64_max",
+                "test_number_overflow_positive",
+                "test_number_overflow_negative",
+                "test_lone_minus_is_symbol",
+                "test_quoted_double",
+                "test_quoted_single",
+                "test_quoted_non_utf8",
+                "test_quoted_empty",
+                "test_unterminated_quote_eof",
+                "test_unterminated_quote_newline",
+                "test_nul_unquoted",
+                "test_nul_quoted",
+                "test_nul_comment",
+                "test_newline_tracking",
+                "test_backslash_newline_continuation",
+                "test_backslash_newline_in_quoted",
+                "test_recovery_after_error",
+                "test_symbols",
+                "test_token_length_boundary",
+                "test_simple_directive_line",
+                "test_listen_directive_line",
+            ],
         },
         Surface {
             c_file: "parse.y (parser)",
@@ -265,9 +297,7 @@ fn generate_negative_capabilities(docs_gen: &Path) -> anyhow::Result<()> {
     md.push_str("| Config AST (`config::directive`) | 31: all newtypes, directives, bounds |\n");
     md.push_str("| Config diagnostics (`config::diagnostic`) | 3: severity, parse result |\n");
     md.push_str("| Clock adjfreq (`io::clock`) | 3: adjtimex conversion, overflow |\n");
-    md.push_str(
-        "| Socket loopback (`io::socket`) | 6: IPv4/v6, bind options, timestamp smoke |\n\n",
-    );
+    md.push_str("| Socket loopback (`io::socket`) | 6: IPv4/v6, bind options, timestamp |\n\n");
 
     md.push_str(
         "## Implemented — unverified against oracle\n\n| Surface | Notes |\n|---------|-------|\n",
@@ -278,10 +308,10 @@ fn generate_negative_capabilities(docs_gen: &Path) -> anyhow::Result<()> {
     md.push_str("| Process (`io::process`) | No runtime credential test. |\n");
     md.push_str("| Socket timestamping (`io::socket`) | recvmsg SO_TIMESTAMP written; no behavioral tests. |\n\n");
 
-    md.push_str("## Config surfaces (planned — not started)\n\n");
-    md.push_str("- `parse.y` lexer — tokenizer matching OpenNTPD 7.9p1's lexical rules\n");
-    md.push_str("- `parse.y` parser — directive grammar, semantic validation\n");
-    md.push_str("- `config.c` runtime lowering — DNS resolution, peer creation\n\n");
+    md.push_str("## Config surfaces\n\n");
+    md.push_str("- **parse.y lexer** (`config::lexer`) — Implemented, 31 tests: cursor, keywords, numbers, quoted strings, NUL rejection, backslash-newline, error recovery, token length boundary\n");
+    md.push_str("- **parse.y parser** — **Planned**: directive grammar, semantic validation\n");
+    md.push_str("- **config.c runtime lowering** — **Planned**: DNS resolution, peer creation\n\n");
 
     md.push_str("## Not yet wired\n\n- NTP poll loop, clock discipline, source selection, control socket, constraint validation, sensor framework, DNS, privsep\n\n");
 
