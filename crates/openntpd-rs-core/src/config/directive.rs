@@ -95,6 +95,9 @@ pub enum Directive {
 pub enum ListenAddress {
     Wildcard,
     Numeric(IpAddr),
+    /// Hostname preserving the original string (resolved by runtime lowering
+    /// via `host_dns()`, matching OpenNTPD's config.c behavior).
+    Name(String),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -273,7 +276,7 @@ impl RefId {
     /// or >4 byte inputs.
     pub fn from_bytes(src: &[u8]) -> Option<Self> {
         let len = src.len();
-        if !(1..=4).contains(&len) {
+        if !(1..=4).contains(&len) || src.contains(&0) {
             return None;
         }
         let mut bytes = [0u8; 4];
@@ -402,8 +405,12 @@ mod tests {
     }
     #[test]
     fn refid_four_bytes() {
-        let r = RefId::from_bytes(b"GPS\0").unwrap();
+        let r = RefId::from_bytes(b"GPS1").unwrap();
         assert_eq!(r.len(), 4);
+    }
+    #[test]
+    fn refid_nul_rejected() {
+        assert!(RefId::from_bytes(b"GPS\0").is_none());
     }
     #[test]
     fn refid_five_bytes_rejected() {
@@ -451,12 +458,20 @@ mod tests {
 
     // Directive construction smoke tests
     #[test]
-    fn listen_directive() {
+    fn listen_wildcard() {
         let d = Directive::Listen(ListenDirective {
             address: ListenAddress::Wildcard,
             rtable: RoutingTable::new(0),
         });
         assert!(matches!(d, Directive::Listen(_)));
+    }
+    #[test]
+    fn listen_hostname() {
+        let d = ListenDirective {
+            address: ListenAddress::Name("time.internal.example".into()),
+            rtable: RoutingTable::new(0),
+        };
+        assert!(matches!(d.address, ListenAddress::Name(_)));
     }
     #[test]
     fn server_directive() {

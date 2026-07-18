@@ -115,7 +115,7 @@ fn test_bind_ntp_socket_ipv4() {
 }
 
 #[test]
-fn test_kernel_timestamp_present() {
+fn test_kernel_timestamp_smoke() {
     // Only run if we can use the raw recvmsg path.
     // Uses SO_TIMESTAMP and checks for a kernel timestamp.
     let bind_addr: SocketAddr = "127.0.0.1:0".parse().unwrap();
