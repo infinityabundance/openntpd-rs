@@ -17,6 +17,54 @@ use core::fmt;
 use core::net::IpAddr;
 
 // ---------------------------------------------------------------------------
+// ConfigString — byte-string preserving exact parser input
+// ---------------------------------------------------------------------------
+
+/// A non-NUL byte string from configuration input.
+///
+/// OpenNTPD's lexer stores configuration strings in a raw `char` buffer
+/// and rejects NUL but does not validate UTF-8.  Quoted strings can
+/// contain arbitrary bytes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConfigString(Vec<u8>);
+
+impl ConfigString {
+    /// Create from bytes.  Returns `None` if the input contains NUL.
+    pub fn new(bytes: Vec<u8>) -> Option<Self> {
+        if bytes.contains(&0) {
+            None
+        } else {
+            Some(Self(bytes))
+        }
+    }
+
+    /// The underlying bytes.
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.0
+    }
+
+    /// Try to interpret as UTF-8.
+    pub fn as_utf8(&self) -> Option<&str> {
+        core::str::from_utf8(&self.0).ok()
+    }
+
+    /// Convert to a Rust String if valid UTF-8.
+    pub fn to_utf8_string(&self) -> Option<String> {
+        core::str::from_utf8(&self.0).ok().map(|s| s.into())
+    }
+}
+
+impl fmt::Display for ConfigString {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if let Ok(s) = core::str::from_utf8(&self.0) {
+            write!(f, "{s}")
+        } else {
+            write!(f, "{:02x?}", self.0)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Source spans
 // ---------------------------------------------------------------------------
 
@@ -95,9 +143,9 @@ pub enum Directive {
 pub enum ListenAddress {
     Wildcard,
     Numeric(IpAddr),
-    /// Hostname preserving the original string (resolved by runtime lowering
+    /// Hostname preserving the original bytes (resolved by runtime lowering
     /// via `host_dns()`, matching OpenNTPD's config.c behavior).
-    Name(String),
+    Name(ConfigString),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -114,7 +162,7 @@ pub struct ListenDirective {
 #[derive(Clone, Debug, PartialEq)]
 pub enum ServerAddress {
     Numeric(IpAddr),
-    Name(String),
+    Name(ConfigString),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -162,14 +210,14 @@ pub enum ConstraintDirective {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ConstraintEndpoint {
     pub host: HostNameOrIp,
-    pub path: String,
+    pub path: ConfigString,
 }
 
 /// A hostname or numeric IP (no wildcard — not valid for constraints).
 #[derive(Clone, Debug, PartialEq)]
 pub enum HostNameOrIp {
     Numeric(IpAddr),
-    Name(String),
+    Name(ConfigString),
 }
 
 // ---------------------------------------------------------------------------
@@ -178,7 +226,7 @@ pub enum HostNameOrIp {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct SensorDirective {
-    pub device: String,
+    pub device: ConfigString,
     pub options: SensorOptions,
 }
 
@@ -272,8 +320,9 @@ pub struct RefId {
     len: u8,
 }
 impl RefId {
-    /// Create from a byte slice of length 1–4.  Returns `None` for empty
-    /// or >4 byte inputs.
+    /// Create from a byte slice of length 1–4.  Returns `None` for empty,
+    /// >4 byte inputs, or inputs containing embedded NUL (the lexer rejects
+    /// NUL and OpenNTPD measures with `strlen()`).
     pub fn from_bytes(src: &[u8]) -> Option<Self> {
         let len = src.len();
         if !(1..=4).contains(&len) || src.contains(&0) {
@@ -468,7 +517,9 @@ mod tests {
     #[test]
     fn listen_hostname() {
         let d = ListenDirective {
-            address: ListenAddress::Name("time.internal.example".into()),
+            address: ListenAddress::Name(
+                ConfigString::new(b"time.internal.example".to_vec()).unwrap(),
+            ),
             rtable: RoutingTable::new(0),
         };
         assert!(matches!(d.address, ListenAddress::Name(_)));
@@ -476,7 +527,7 @@ mod tests {
     #[test]
     fn server_directive() {
         let d = Directive::Server(ServerDirective::Single {
-            address: ServerAddress::Name("pool.ntp.org".into()),
+            address: ServerAddress::Name(ConfigString::new(b"pool.ntp.org".to_vec()).unwrap()),
             options: ServerOptions::default(),
         });
         assert!(matches!(d, Directive::Server(_)));
@@ -501,8 +552,8 @@ mod tests {
     fn constraint_single() {
         let d = Directive::Constraint(ConstraintDirective::Single {
             endpoint: ConstraintEndpoint {
-                host: HostNameOrIp::Name("pool.ntp.org".into()),
-                path: "/".into(),
+                host: HostNameOrIp::Name(ConfigString::new(b"pool.ntp.org".to_vec()).unwrap()),
+                path: ConfigString::new(b"/".to_vec()).unwrap(),
             },
             pinned_addresses: vec![],
         });
@@ -512,8 +563,8 @@ mod tests {
     fn constraint_pool() {
         let d = Directive::Constraint(ConstraintDirective::Pool {
             endpoint: ConstraintEndpoint {
-                host: HostNameOrIp::Name("pool.ntp.org".into()),
-                path: "/".into(),
+                host: HostNameOrIp::Name(ConfigString::new(b"pool.ntp.org".to_vec()).unwrap()),
+                path: ConfigString::new(b"/".to_vec()).unwrap(),
             },
         });
         assert!(matches!(d, Directive::Constraint(_)));
@@ -521,7 +572,7 @@ mod tests {
     #[test]
     fn sensor_directive() {
         let d = Directive::Sensor(SensorDirective {
-            device: "/dev/pps0".into(),
+            device: ConfigString::new(b"/dev/pps0".to_vec()).unwrap(),
             options: SensorOptions::default(),
         });
         assert!(matches!(d, Directive::Sensor(_)));

@@ -114,12 +114,6 @@ fn surfaces() -> Vec<Surface> {
                 "constraint_single",
                 "constraint_pool",
                 "sensor_directive",
-                "server_directive",
-                "server_pool_directive",
-                "query_from_ip",
-                "constraint_single",
-                "constraint_pool",
-                "sensor_directive",
             ],
         },
         Surface {
@@ -268,11 +262,11 @@ fn generate_negative_capabilities(docs_gen: &Path) -> anyhow::Result<()> {
     md.push_str("| NTP wire (`ntp`) | 13: wire format, unsigned dispersion, era 0–2 |\n");
     md.push_str("| NTP msg I/O (`ntp::msg`) | 4: exact-length, auth suffix |\n");
     md.push_str("| Utility (`util`) | 12: frequency, Timespec, NaN/Inf/range/overflow |\n");
-    md.push_str("| Config AST (`config::directive`) | 29: all newtypes, directives, bounds |\n");
+    md.push_str("| Config AST (`config::directive`) | 31: all newtypes, directives, bounds |\n");
     md.push_str("| Config diagnostics (`config::diagnostic`) | 3: severity, parse result |\n");
     md.push_str("| Clock adjfreq (`io::clock`) | 3: adjtimex conversion, overflow |\n");
     md.push_str(
-        "| Socket loopback (`io::socket`) | 6: IPv4/v6, bind options, timestamp presence |\n\n",
+        "| Socket loopback (`io::socket`) | 6: IPv4/v6, bind options, timestamp smoke |\n\n",
     );
 
     md.push_str(
