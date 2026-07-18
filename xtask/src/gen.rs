@@ -181,6 +181,7 @@ fn surfaces() -> Vec<Surface> {
             status: "Implemented — internally tested",
             tests: &[
                 "cursor_peek_bump",
+                "cursor_unread",
                 "comment_only",
                 "comment_at_eof",
                 "continuation_extends_comment",
@@ -206,6 +207,9 @@ fn surfaces() -> Vec<Surface> {
                 "continuation_between_tokens",
                 "continuation_at_start_of_line",
                 "recovery_skips_escaped_newline",
+                "leading_backslash_before_keyword",
+                "double_backslash_preserves_second",
+                "whitespace_continuation_with_indentation",
                 "wildcard_is_string",
                 "wildcard_listen",
                 "colon_prefixed_string",
@@ -220,6 +224,8 @@ fn surfaces() -> Vec<Surface> {
                 "quoted_escaped_space",
                 "quoted_escaped_tab",
                 "quoted_unknown_escape",
+                "quoted_consecutive_backslashes",
+                "quoted_backslash_before_closing_quote",
                 "quoted_escaped_nul_returns_error",
                 "quoted_raw_newline_continues",
                 "unquoted_continuation_merges",
@@ -236,8 +242,8 @@ fn surfaces() -> Vec<Surface> {
                 "unquoted_slash_terminates",
                 "unquoted_at_sign_permitted",
                 "unquoted_question_mark_permitted",
-                "unquoted_semicolon_terminates",
-                "unquoted_bracket_terminates",
+                "semicolon_inside_unquoted_string",
+                "brackets_inside_unquoted_string",
                 "unquoted_paren_terminates",
                 "unquoted_bang_terminates",
                 "unquoted_comma_terminates",
@@ -245,6 +251,11 @@ fn surfaces() -> Vec<Surface> {
                 "quoted_limit_8095_rejected",
                 "unquoted_limit_8095",
                 "unquoted_limit_8096_rejected",
+                "negative_number_8095_total_accepted",
+                "negative_number_8096_total_rejected",
+                "positive_number_8095_total_accepted",
+                "number_terminator_vertical_tab",
+                "number_terminator_form_feed",
                 "simple_directive_line",
                 "listen_directive_line",
             ],
@@ -332,7 +343,7 @@ fn generate_negative_capabilities(docs_gen: &Path) -> anyhow::Result<()> {
     md.push_str("| Utility (`util`) | 12: frequency, Timespec, NaN/Inf/range/overflow |\n");
     md.push_str("| Config AST (`config::directive`) | 31: all newtypes, directives, bounds |\n");
     md.push_str("| Config diagnostics (`config::diagnostic`) | 3: severity, parse result |\n");
-    md.push_str("| Config lexer (`config::lexer`) | 67: cursor, keywords, numbers, quoted strings, NUL rejection, continuation, recovery, char class, length boundaries |\n");
+    md.push_str("| Config lexer (`config::lexer`) | 81: cursor, keywords, numbers, quoted strings, NUL rejection, continuation, recovery, char class, length boundaries, backslash handling, negative number limits |\n");
     md.push_str("| Clock adjfreq (`io::clock`) | 3: adjtimex conversion, overflow |\n");
     md.push_str("| Socket loopback (`io::socket`) | 6: IPv4/v6, bind options, timestamp |\n\n");
 
@@ -346,7 +357,7 @@ fn generate_negative_capabilities(docs_gen: &Path) -> anyhow::Result<()> {
     md.push_str("| Socket timestamping (`io::socket`) | recvmsg SO_TIMESTAMP written; no behavioral tests. |\n\n");
 
     md.push_str("## Config surfaces\n\n");
-    md.push_str("- **parse.y lexer** (`config::lexer`) — Implemented, 67 tests: cursor, keywords, numbers, quoted strings, NUL rejection, backslash-newline, error recovery, char class, token length boundaries\n");
+    md.push_str("- **parse.y lexer** (`config::lexer`) — Implemented, 81 tests: cursor, keywords, numbers, quoted strings, NUL rejection, backslash-newline, error recovery, char class, token length boundaries, negative number limits\n");
     md.push_str("- **parse.y parser** — **Planned**: directive grammar, semantic validation\n");
     md.push_str("- **config.c runtime lowering** — **Planned**: DNS resolution, peer creation\n\n");
 

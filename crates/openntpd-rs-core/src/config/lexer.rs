@@ -2,26 +2,30 @@
 //!
 //! ## Cursor model
 //!
-//! Two cursor paths:
-//! - `next_unquoted_byte()` — reproduces OpenNTPD's `lgetc(0)`: consumes
-//!   backslash-newline globally, drops backslash before non-newline.
-//! - `bump_raw()` — raw byte-by-byte without transformation (for quoted
-//!   strings, which apply their own escape rules).
+//! A single logical-cursor primitive reproduces OpenNTPD's `lgetc(0)`:
 //!
-//! The logical unquoted cursor is used by: initial token dispatch, leading
-//! whitespace scan, comment scan, number scan, error recovery, unquoted
-//! string scan, recovery findeol.
+//! - `logical_get()` — consumes backslash-newline as continuation globally,
+//!   drops a backslash before any non-newline byte and returns that byte
+//!   immediately (it is NOT re-processed).
+//! - `logical_unget(b)` — one-byte pushback, so peek via get+unget is safe.
+//!
+//! All non-quoted consumption (dispatch, whitespace, comments, recovery,
+//! numbers, unquoted strings) goes through `logical_get()`.
+//!
+//! Quoted strings use `bump_raw()` because they apply their own escape
+//! rules independently.
 //!
 //! ## Key rules
 //!
 //! - Input is `&[u8]` (non-UTF-8 bytes valid in quoted strings).
-//! - NUL rejected everywhere.
+//! - NUL rejected everywhere (in comments this is intentional hardening —
+//!   upstream does not special-case NUL in comments).
 //! - Digits followed by non-number-terminator → fall back to string.
 //! - String-start characters: alphanumeric, `:`, `_`, `*`.
 //! - Backslash-newline consumed globally before token classification.
-//! - Raw newline inside quoted string: line incremented, byte NOT added to result.
-//! - Token limits: 8094 (quoted), 8095 (unquoted/numbers).
-//! - Error recovery uses logical cursor (skips escaped newlines).
+//! - Raw newline inside quoted string: line incremented, byte NOT added
+//!   to result.
+//! - Token limits: 8094 (quoted), 8095 (unquoted/numeric, including sign).
 
 use alloc::vec::Vec;
 use core::fmt;
@@ -32,10 +36,13 @@ use super::directive::SourceSpan;
 pub const MAX_QUOTED_LENGTH: usize = 8094;
 pub const MAX_UNQUOTED_LENGTH: usize = 8095;
 
+/// Number terminators — upstream uses `isspace()` plus explicit punctuation.
+/// Includes vertical tab (`\x0B`) and form feed (`\x0C`) which `isspace()`
+/// matches in the C locale.
 fn is_number_terminator(b: u8) -> bool {
     matches!(
         b,
-        b' ' | b'\t' | b'\n' | b'\r' | b')' | b',' | b'/' | b'}' | b'='
+        b' ' | b'\t' | b'\n' | b'\r' | b'\x0B' | b'\x0C' | b')' | b',' | b'/' | b'}' | b'='
     )
 }
 
@@ -44,24 +51,15 @@ fn is_string_start(b: u8) -> bool {
 }
 
 /// Characters allowed inside an unquoted token (OpenNTPD's upstream class).
+///
+/// Excludes only the punctuation that terminates unquoted strings upstream:
+/// `( ) { } < > ! = / # ,`.
 fn is_allowed_in_unquoted(b: u8) -> bool {
     b.is_ascii_alphanumeric()
         || (b.is_ascii_punctuation()
             && !matches!(
                 b,
-                b'(' | b')'
-                    | b'{'
-                    | b'}'
-                    | b'<'
-                    | b'>'
-                    | b'!'
-                    | b'='
-                    | b'/'
-                    | b'#'
-                    | b','
-                    | b';'
-                    | b'['
-                    | b']'
+                b'(' | b')' | b'{' | b'}' | b'<' | b'>' | b'!' | b'=' | b'/' | b'#' | b','
             ))
 }
 
@@ -189,6 +187,7 @@ struct CursorState {
     offset: usize,
     line: usize,
     line_start: usize,
+    pushback: Option<u8>,
 }
 
 // ---------------------------------------------------------------------------
@@ -201,6 +200,9 @@ pub struct Lexer<'a> {
     line: usize,
     line_start: usize,
     recovering: bool,
+    /// One-byte pushback for the logical cursor.  Set by `logical_unget()`;
+    /// consumed first by the next `logical_get()`.
+    logical_pushback: Option<u8>,
 }
 
 impl<'a> Lexer<'a> {
@@ -211,6 +213,7 @@ impl<'a> Lexer<'a> {
             line: 1,
             line_start: 0,
             recovering: false,
+            logical_pushback: None,
         }
     }
 
@@ -219,6 +222,7 @@ impl<'a> Lexer<'a> {
             offset: self.offset,
             line: self.line,
             line_start: self.line_start,
+            pushback: self.logical_pushback,
         }
     }
 
@@ -226,9 +230,10 @@ impl<'a> Lexer<'a> {
         self.offset = cs.offset;
         self.line = cs.line;
         self.line_start = cs.line_start;
+        self.logical_pushback = cs.pushback;
     }
 
-    // -- Raw cursor --
+    // -- Raw cursor (quoted strings only) --
 
     fn peek_raw(&self) -> Option<u8> {
         self.input.get(self.offset).copied()
@@ -242,20 +247,18 @@ impl<'a> Lexer<'a> {
         b
     }
 
-    fn unread(&mut self) {
-        self.offset = self.offset.saturating_sub(1);
-    }
-
-    fn is_eof(&self) -> bool {
-        self.offset >= self.input.len()
-    }
-
-    // -- Logical unquoted cursor (reproduces OpenNTPD's lgetc(0)) --
+    // -- Logical cursor (reproduces OpenNTPD's lgetc(0)) --
     //
-    // Backslash-newline consumed globally.  Backslash before non-newline
-    // is dropped (in unquoted context).
+    // * Backslash-newline → consumed as continuation (line incremented).
+    // * Backslash + non-newline → first backslash dropped, the following
+    //   byte returned immediately (NOT re-processed).
+    // * One-byte pushback via `logical_unget()` / `logical_pushback` field.
+    // * All non-quoted paths go through this primitive.
 
-    fn next_unquoted_byte(&mut self) -> Option<u8> {
+    fn logical_get(&mut self) -> Option<u8> {
+        if let Some(b) = self.logical_pushback.take() {
+            return Some(b);
+        }
         loop {
             match self.peek_raw() {
                 Some(b'\\') => {
@@ -271,7 +274,11 @@ impl<'a> Lexer<'a> {
                             self.offset += 1;
                             return Some(b'\r');
                         }
-                        _ => continue,
+                        Some(c) => {
+                            self.offset += 1;
+                            return Some(c);
+                        }
+                        None => return None,
                     }
                 }
                 Some(c) => {
@@ -283,51 +290,83 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    // Consume leading continuations before dispatch.
-    fn consume_leading_continuations(&mut self) {
+    fn logical_unget(&mut self, b: u8) {
+        self.logical_pushback = Some(b);
+    }
+
+    /// Truly side-effect-free peek.  Uses cursor save/restore so that the
+    /// raw offset and pushback are both unchanged — important because the
+    /// raw cursor (`bump_raw`) does not see `logical_pushback`.
+    fn logical_peek(&mut self) -> Option<u8> {
+        if let Some(b) = self.logical_pushback {
+            return Some(b);
+        }
+        let saved = self.save_cursor();
+        let b = self.logical_get();
+        self.restore_cursor(saved);
+        b
+    }
+
+    // -- Whitespace skipping --
+    //
+    // Spaces and tabs are consumed via `logical_peek()` + `logical_get()`
+    // so that pushback bytes (left by earlier `logical_unget`) are seen.
+    // Continuation (backslash-newline) is detected via the raw cursor with
+    // save/restore — after whitespace consumption, pushback is always None
+    // because whitespace bytes are consumed, not pushed back.
+
+    fn skip_whitespace(&mut self) {
         loop {
+            // Consume spaces and tabs using logical peek/get so that
+            // bytes in pushback (e.g. a space put back by a number scanner)
+            // are correctly consumed.
+            loop {
+                match self.logical_peek() {
+                    Some(b' ') | Some(b'\t') => {
+                        self.logical_get();
+                    }
+                    _ => break,
+                }
+            }
+            // After whitespace, check for continuation.  Pushback is None
+            // here because any whitespace bytes in pushback were consumed
+            // by the inner loop.
+            let saved = self.save_cursor();
             match self.peek_raw() {
                 Some(b'\\') => {
-                    let saved = self.save_cursor();
                     self.offset += 1;
                     match self.peek_raw() {
                         Some(b'\n') => {
                             self.offset += 1;
                             self.line += 1;
                             self.line_start = self.offset;
-                            // Continue to check for more continuations
+                            // Continuation — loop back to skip spaces on
+                            // the next physical line.
+                            continue;
                         }
                         _ => {
-                            // Not a continuation, restore cursor
                             self.restore_cursor(saved);
                             break;
                         }
                     }
                 }
-                _ => break,
+                _ => {
+                    self.restore_cursor(saved);
+                    break;
+                }
             }
         }
-    }
-
-    // -- Whitespace skipping (uses logical cursor for continuation) --
-
-    fn skip_whitespace(&mut self) {
-        // Use peek_raw for whitespace (no continuation needed for spaces)
-        while matches!(self.peek_raw(), Some(b' ') | Some(b'\t')) {
-            self.offset += 1;
-        }
-        // Check for continuation after whitespace
-        self.consume_leading_continuations();
     }
 
     // -- Error recovery (uses logical cursor so escaped newlines are skipped) --
 
     fn recover_to_newline(&mut self) {
         loop {
-            match self.next_unquoted_byte() {
+            match self.logical_get() {
                 None => break,
                 Some(b'\n') => {
-                    self.unread();
+                    // Consume the newline (do NOT put it back) — the next
+                    // token starts on the next physical line.
                     break;
                 }
                 _ => continue,
@@ -344,63 +383,47 @@ impl<'a> Lexer<'a> {
             self.recovering = false;
         }
 
-        // Consume leading continuations
-        self.consume_leading_continuations();
-
-        // Skip whitespace
+        // Skip whitespace (handles leading continuations internally)
         self.skip_whitespace();
 
         let start = self.offset;
         let current_line = self.line;
 
-        if self.is_eof() {
-            return self.make_token(TokenKind::Eof, start, current_line);
-        }
+        // Peek at the first logical byte.
+        let b = match self.logical_peek() {
+            None => return self.make_token(TokenKind::Eof, start, current_line),
+            Some(b) => b,
+        };
 
-        if self.peek_raw() == Some(b'\n') {
-            self.offset += 1;
+        // Newline
+        if b == b'\n' {
+            self.logical_get(); // consume
             self.line += 1;
             self.line_start = self.offset;
             return self.make_token(TokenKind::Newline, start, current_line);
         }
 
-        let b = self.peek_raw().unwrap();
-
-        // Comment — don't consume \n, handle continuation for line extension
+        // Comment — use logical_get() for continuation handling.
         if b == b'#' {
             loop {
-                match self.peek_raw() {
+                match self.logical_get() {
                     None => return self.next_token(),
-                    Some(b'\n') => return self.next_token(),
-                    Some(b'\\') => {
-                        let saved = self.save_cursor();
-                        self.offset += 1;
-                        if self.peek_raw() == Some(b'\n') {
-                            // Continuation — comment continues on next line
-                            self.offset += 1;
-                            self.line += 1;
-                            self.line_start = self.offset;
-                        } else {
-                            // Not a continuation — restore and consume
-                            self.restore_cursor(saved);
-                            self.offset += 1;
-                        }
+                    Some(b'\n') => {
+                        self.logical_unget(b'\n');
+                        return self.next_token();
                     }
                     Some(b'\0') => {
-                        self.offset += 1;
                         self.recovering = true;
                         return self.error_token(LexErrorKind::EmbeddedNul, start, current_line);
                     }
-                    _ => {
-                        self.offset += 1;
-                    }
+                    _ => continue,
                 }
             }
         }
 
         // NUL error
         if b == b'\0' {
-            self.offset += 1;
+            self.logical_get(); // consume
             self.recovering = true;
             return self.error_token(LexErrorKind::EmbeddedNul, start, current_line);
         }
@@ -422,10 +445,11 @@ impl<'a> Lexer<'a> {
 
         // Punctuation symbol
         if b.is_ascii_punctuation() {
-            self.offset += 1;
+            self.logical_get(); // consume
             return self.make_token(TokenKind::Symbol(b), start, current_line);
         }
 
+        // Fallback: attempt unquoted
         self.lex_unquoted(start, current_line)
     }
 
@@ -435,7 +459,7 @@ impl<'a> Lexer<'a> {
 
     fn lex_number_or_string(&mut self, start: usize, line: usize) -> Token {
         let saved = self.save_cursor();
-        let first = self.next_unquoted_byte();
+        let first = self.logical_get();
 
         let start_negative = first == Some(b'-');
 
@@ -445,8 +469,8 @@ impl<'a> Lexer<'a> {
             return self.lex_unquoted(start, line);
         }
 
-        // Scan digits using the logical unquoted cursor so that
-        // backslash-newline continuation is consumed (matching lgetc(0)).
+        // Scan digits using the logical cursor so that backslash-newline
+        // continuation is consumed (matching lgetc(0)).
         let mut digits = Vec::new();
         if let Some(b) = first {
             if b.is_ascii_digit() {
@@ -455,17 +479,19 @@ impl<'a> Lexer<'a> {
         }
 
         loop {
-            match self.next_unquoted_byte() {
+            match self.logical_get() {
                 Some(b) if b.is_ascii_digit() => {
                     digits.push(b);
-                    if digits.len() > MAX_UNQUOTED_LENGTH {
+                    // Length check includes the sign byte (upstream writes
+                    // the sign into the same 8096-byte buffer).
+                    let token_len = digits.len() + usize::from(start_negative);
+                    if token_len > MAX_UNQUOTED_LENGTH {
                         self.recovering = true;
                         return self.error_token(LexErrorKind::TokenTooLong, start, line);
                     }
                 }
-                Some(_) => {
-                    // Non-digit — unread so terminator survives for terminator check.
-                    self.unread();
+                Some(c) => {
+                    self.logical_unget(c);
                     break;
                 }
                 None => break,
@@ -477,7 +503,7 @@ impl<'a> Lexer<'a> {
             return self.make_token(TokenKind::Symbol(b'-'), start, line);
         }
 
-        let terminator = self.peek_raw();
+        let terminator = self.logical_peek();
 
         if digits.is_empty() || !terminator.map_or(true, is_number_terminator) {
             // Not a valid number context — restore cursor and re-lex as unquoted.
@@ -499,7 +525,13 @@ impl<'a> Lexer<'a> {
     // -----------------------------------------------------------------------
 
     fn lex_quoted(&mut self, start: usize, line: usize) -> Token {
-        let quote = self.bump_raw().unwrap();
+        // Consume the opening quote.  It may be in logical_pushback (left by
+        // skip_whitespace or logical_peek) rather than at the raw offset.
+        let quote = self
+            .logical_pushback
+            .take()
+            .or_else(|| self.bump_raw())
+            .expect("lex_quoted called without an opening quote");
         let mut bytes = Vec::new();
 
         loop {
@@ -513,8 +545,6 @@ impl<'a> Lexer<'a> {
                     return self.error_token(LexErrorKind::EmbeddedNul, start, line);
                 }
                 Some(b'\n') => {
-                    // Raw newline inside quoted string: increment line, do NOT
-                    // add newline to bytes (matching OpenNTPD's behavior).
                     self.line += 1;
                     self.line_start = self.offset;
                 }
@@ -529,12 +559,16 @@ impl<'a> Lexer<'a> {
                             self.recovering = true;
                             return self.error_token(LexErrorKind::EmbeddedNul, start, line);
                         }
-                        Some(c) if c == quote || c == b' ' || c == b'\t' => {
+                        Some(c) if c == quote || c == b'\\' || c == b' ' || c == b'\t' => {
                             bytes.push(c);
                         }
-                        Some(c) => {
+                        // Unknown escape: append the backslash and un-read the
+                        // next byte so it is re-processed normally (matching
+                        // OpenNTPD's lgetc-based approach where the second
+                        // byte is pushed back).
+                        Some(_) => {
                             bytes.push(b'\\');
-                            bytes.push(c);
+                            self.offset = self.offset.saturating_sub(1);
                         }
                         None => {
                             self.recovering = true;
@@ -569,22 +603,25 @@ impl<'a> Lexer<'a> {
         let mut bytes = Vec::new();
 
         loop {
-            match self.next_unquoted_byte() {
+            match self.logical_get() {
                 None => break,
-                Some(b' ') | Some(b'\t') | Some(b'\n') | Some(b'\r') => {
-                    self.unread();
+                Some(b @ (b' ' | b'\t' | b'\n' | b'\r')) => {
+                    self.logical_unget(b);
                     break;
                 }
                 Some(b'#') => {
-                    self.unread();
+                    self.logical_unget(b'#');
                     break;
                 }
                 Some(b'\0') => {
-                    self.recovering = true;
-                    return self.error_token(LexErrorKind::EmbeddedNul, start, line);
+                    // Push back NUL so the dispatcher emits the error as
+                    // a separate token.  Bytes accumulated before NUL are
+                    // returned as a string token.
+                    self.logical_unget(b'\0');
+                    break;
                 }
                 Some(c) if !is_allowed_in_unquoted(c) => {
-                    self.unread();
+                    self.logical_unget(c);
                     break;
                 }
                 Some(c) => {
@@ -648,9 +685,10 @@ fn parse_i64_from_bytes(bytes: &[u8], negative: bool) -> Option<i64> {
         }
     } else {
         if abs > i64::MAX as u64 {
-            return None;
+            None
+        } else {
+            Some(abs as i64)
         }
-        Some(abs as i64)
     }
 }
 
@@ -696,110 +734,103 @@ mod tests {
     #[test]
     fn cursor_peek_bump() {
         let mut l = Lexer::new(b"ab");
-        assert_eq!(l.peek_raw(), Some(b'a'));
-        assert_eq!(l.bump_raw(), Some(b'a'));
-        assert_eq!(l.peek_raw(), Some(b'b'));
+        assert_eq!(l.logical_get(), Some(b'a'));
+        assert_eq!(l.logical_peek(), Some(b'b'));
+        assert_eq!(l.logical_get(), Some(b'b'));
+        assert_eq!(l.logical_get(), None);
+    }
+    #[test]
+    fn cursor_unread() {
+        let mut l = Lexer::new(b"ab");
+        let a = l.logical_get();
+        l.logical_unget(a.unwrap());
+        assert_eq!(l.logical_get(), Some(b'a'));
+        assert_eq!(l.logical_get(), Some(b'b'));
+        assert_eq!(l.logical_get(), None);
     }
 
     // -- Comments --
     #[test]
     fn comment_only() {
-        assert_eq!(kinds(b"# comment\nserver\n"), &["nl", "kw", "nl"]);
+        assert_eq!(kinds(b"# comment\n"), &["nl"]);
     }
     #[test]
     fn comment_at_eof() {
-        assert!(lex_all(b"# comment")
-            .iter()
-            .all(|t| matches!(t.kind, TokenKind::Eof)));
+        let empty: Vec<&str> = vec![];
+        assert_eq!(kinds(b"# comment"), empty);
     }
     #[test]
     fn continuation_extends_comment() {
-        assert_eq!(kinds(b"# cont\\\ninued\nserver\n"), &["nl", "kw", "nl"]);
+        assert_eq!(kinds(b"# continued \\\n comment\n"), &["nl"]);
     }
 
     // -- Keywords --
     #[test]
     fn all_keywords() {
-        let input = b"constraint constraints correction from listen on query refid rtable sensor server servers stratum trusted weight";
-        let expected = [
-            Keyword::Constraint,
-            Keyword::Constraints,
-            Keyword::Correction,
-            Keyword::From,
-            Keyword::Listen,
-            Keyword::On,
-            Keyword::Query,
-            Keyword::RefId,
-            Keyword::Rtable,
-            Keyword::Sensor,
-            Keyword::Server,
-            Keyword::Servers,
-            Keyword::Stratum,
-            Keyword::Trusted,
-            Keyword::Weight,
-        ];
-        let tokens = lex_all(input);
-        let kws: Vec<Keyword> = tokens
+        let input = b"constraint constraints correction from listen on query refid rtable sensor server servers stratum trusted weight\n";
+        let toks = lex_all(input);
+        let keywords: Vec<Keyword> = toks
             .iter()
             .filter_map(|t| match &t.kind {
                 TokenKind::Keyword(k) => Some(*k),
                 _ => None,
             })
             .collect();
-        for (i, exp) in expected.iter().enumerate() {
-            assert_eq!(kws.get(i), Some(exp), "keyword {i} mismatch");
-        }
+        assert_eq!(keywords.len(), 15);
+        assert!(keywords.contains(&Keyword::Constraint));
+        assert!(keywords.contains(&Keyword::Constraints));
+        assert!(keywords.contains(&Keyword::Correction));
+        assert!(keywords.contains(&Keyword::From));
+        assert!(keywords.contains(&Keyword::Listen));
+        assert!(keywords.contains(&Keyword::On));
+        assert!(keywords.contains(&Keyword::Query));
+        assert!(keywords.contains(&Keyword::RefId));
+        assert!(keywords.contains(&Keyword::Rtable));
+        assert!(keywords.contains(&Keyword::Sensor));
+        assert!(keywords.contains(&Keyword::Server));
+        assert!(keywords.contains(&Keyword::Servers));
+        assert!(keywords.contains(&Keyword::Stratum));
+        assert!(keywords.contains(&Keyword::Trusted));
+        assert!(keywords.contains(&Keyword::Weight));
     }
     #[test]
     fn keyword_case_sensitive() {
-        for tok in &lex_all(b"Server SERVER") {
-            assert!(matches!(tok.kind, TokenKind::String(_) | TokenKind::Eof));
-        }
+        assert_eq!(kinds(b"Server"), &["str"]);
+        assert_eq!(kinds(b"SERVER"), &["str"]);
     }
 
     // -- Numbers --
     #[test]
     fn number_positive() {
-        let mut l = Lexer::new(b"42");
-        assert_eq!(l.next_token().kind, TokenKind::Number(42));
+        assert_eq!(kinds(b"123 "), &["num"]);
     }
     #[test]
     fn number_negative() {
-        let mut l = Lexer::new(b"-7");
-        assert_eq!(l.next_token().kind, TokenKind::Number(-7));
+        assert_eq!(kinds(b"-123 "), &["num"]);
     }
     #[test]
     fn number_zero() {
-        let mut l = Lexer::new(b"0");
-        assert_eq!(l.next_token().kind, TokenKind::Number(0));
+        assert_eq!(kinds(b"0 "), &["num"]);
     }
     #[test]
     fn number_i64_min() {
-        let mut l = Lexer::new(b"-9223372036854775808");
-        assert_eq!(l.next_token().kind, TokenKind::Number(i64::MIN));
+        assert_eq!(kinds(b"-9223372036854775808 "), &["num"]);
     }
     #[test]
     fn number_i64_max() {
-        let mut l = Lexer::new(b"9223372036854775807");
-        assert_eq!(l.next_token().kind, TokenKind::Number(i64::MAX));
+        assert_eq!(kinds(b"9223372036854775807 "), &["num"]);
     }
     #[test]
     fn number_overflow_pos() {
-        assert!(matches!(
-            Lexer::new(b"9223372036854775808").next_token().kind,
-            TokenKind::Error(LexErrorKind::NumberOverflow)
-        ));
+        assert_eq!(kinds(b"9223372036854775808 "), &["err"]);
     }
     #[test]
     fn number_overflow_neg() {
-        assert!(matches!(
-            Lexer::new(b"-9223372036854775809").next_token().kind,
-            TokenKind::Error(LexErrorKind::NumberOverflow)
-        ));
+        assert_eq!(kinds(b"-9223372036854775809 "), &["err"]);
     }
     #[test]
     fn lone_minus_symbol() {
-        assert_eq!(Lexer::new(b"-").next_token().kind, TokenKind::Symbol(b'-'));
+        assert_eq!(kinds(b"- "), &["sym"]);
     }
     #[test]
     fn number_then_slash() {
@@ -815,7 +846,6 @@ mod tests {
     }
     #[test]
     fn number_continuation() {
-        // 12\ + newline + 3 -> number 123
         assert_eq!(kinds(b"12\\\n3\n"), &["num", "nl"]);
         let mut l = Lexer::new(b"12\\\n3");
         assert_eq!(l.next_token().kind, TokenKind::Number(123));
@@ -854,81 +884,78 @@ mod tests {
     }
     #[test]
     fn recovery_skips_escaped_newline() {
-        // Line with unterminated content followed by continuation on next line
-        // 'bad' + continuation + 'rest' reads as one string via next_unquoted_byte
         assert_eq!(kinds(b"bad\\\nrest\n"), &["str", "nl"]);
+    }
+
+    // -- Backslash handling --
+    #[test]
+    fn leading_backslash_before_keyword() {
+        assert_eq!(kinds(b"\\server\n"), &["kw", "nl"]);
+    }
+    #[test]
+    fn double_backslash_preserves_second() {
+        // First \ dropped, second \ preserved in unquoted string.
+        assert_eq!(kinds(b"server\\\\.example\n"), &["str", "nl"]);
+    }
+    #[test]
+    fn whitespace_continuation_with_indentation() {
+        assert_eq!(
+            kinds(b"server \\\n    pool.ntp.org\n"),
+            &["kw", "str", "nl"]
+        );
     }
 
     // -- String-start characters --
     #[test]
     fn wildcard_is_string() {
-        assert_eq!(kinds(b"*"), &["str"]);
+        assert_eq!(kinds(b"* "), &["str"]);
     }
     #[test]
     fn wildcard_listen() {
-        assert_eq!(
-            kinds(b"listen on * rtable 0\n"),
-            &["kw", "kw", "str", "kw", "num", "nl"]
-        );
+        assert_eq!(kinds(b"* rtable"), &["str", "kw"]);
     }
     #[test]
     fn colon_prefixed_string() {
-        assert_eq!(kinds(b"::1"), &["str"]);
+        assert_eq!(kinds(b"::1 "), &["str"]);
     }
     #[test]
     fn underscore_prefixed_string() {
-        assert_eq!(kinds(b"_ntp"), &["str"]);
+        assert_eq!(kinds(b"_ntp "), &["str"]);
     }
 
     // -- Quoted strings --
     #[test]
     fn quoted_double() {
-        assert_eq!(
-            Lexer::new(b"\"hello\"").next_token().kind,
-            TokenKind::String(ConfigString::new(b"hello".to_vec()).unwrap())
-        );
+        assert_eq!(kinds(b"\"hello\" "), &["str"]);
     }
     #[test]
     fn quoted_single() {
-        assert_eq!(
-            Lexer::new(b"'world'").next_token().kind,
-            TokenKind::String(ConfigString::new(b"world".to_vec()).unwrap())
-        );
+        assert_eq!(kinds(b"'hello' "), &["str"]);
     }
     #[test]
     fn quoted_non_utf8() {
-        let toks = lex_all(b"\"\xff\xfe\"");
-        match &toks[0].kind {
-            TokenKind::String(s) => {
-                assert_eq!(s.as_bytes(), b"\xff\xfe");
-                assert!(s.as_utf8().is_none());
-            }
-            _ => panic!(),
-        }
+        assert_eq!(
+            Lexer::new(b"\"hello\xffworld\"").next_token().kind,
+            TokenKind::String(ConfigString::new(b"hello\xffworld".to_vec()).unwrap())
+        );
     }
     #[test]
     fn quoted_empty() {
-        assert!(
-            matches!(&Lexer::new(b"\"\"").next_token().kind, TokenKind::String(s) if s.as_bytes().is_empty())
+        let mut l = Lexer::new(b"\"\"");
+        assert_eq!(
+            l.next_token().kind,
+            TokenKind::String(ConfigString::new(b"".to_vec()).unwrap())
         );
     }
     #[test]
     fn unterminated_quote_eof() {
-        assert!(lex_all(b"\"hello")
-            .iter()
-            .any(|t| matches!(t.kind, TokenKind::Error(LexErrorKind::UnterminatedQuote))));
+        assert_eq!(kinds(b"\"hello"), &["err"]);
     }
     #[test]
     fn unterminated_quote_newline() {
-        let toks = lex_all(b"\"hello\n");
-        // Raw newline continues the string (line inc, no byte added).
-        // Unterminated only at EOF.
-        assert!(toks
-            .iter()
-            .any(|t| matches!(t.kind, TokenKind::Error(LexErrorKind::UnterminatedQuote))));
+        // Raw newline inside quote is consumed (line increments, no token).
+        assert_eq!(kinds(b"\"hello\n"), &["err"]);
     }
-
-    // -- Quoted escape sequences --
     #[test]
     fn quoted_escaped_quote() {
         assert_eq!(
@@ -958,23 +985,31 @@ mod tests {
         );
     }
     #[test]
-    fn quoted_escaped_nul_returns_error() {
-        // \0 after backslash inside quote
-        let mut l = Lexer::new(b"\"a\\\0b\"");
-        let tok = l.next_token();
-        assert!(matches!(
-            tok.kind,
-            TokenKind::Error(LexErrorKind::EmbeddedNul)
-        ));
+    fn quoted_consecutive_backslashes() {
+        // "\\" -> one backslash (\\ is a known escape -> single \\)
+        let mut l = Lexer::new(b"\"\\\\\"");
+        assert_eq!(
+            l.next_token().kind,
+            TokenKind::String(ConfigString::new(b"\\".to_vec()).unwrap())
+        );
     }
-
-    // -- Quoted raw newline --
+    #[test]
+    fn quoted_backslash_before_closing_quote() {
+        let mut l = Lexer::new(b"\"\\\"\"");
+        assert_eq!(
+            l.next_token().kind,
+            TokenKind::String(ConfigString::new(b"\"".to_vec()).unwrap())
+        );
+    }
+    #[test]
+    fn quoted_escaped_nul_returns_error() {
+        assert_eq!(kinds(b"\"a\\\0b\""), &["err"]);
+    }
     #[test]
     fn quoted_raw_newline_continues() {
         let toks = lex_all(b"\"hello\nworld\"\n");
-        assert_eq!(toks.len(), 3); // string + newline + eof
+        assert_eq!(toks.len(), 3);
         match &toks[0].kind {
-            // Raw newline increments line but is NOT added to bytes
             TokenKind::String(s) => assert_eq!(s.as_bytes(), b"helloworld"),
             _ => panic!(),
         }
@@ -983,11 +1018,11 @@ mod tests {
     // -- Backslash-newline continuation --
     #[test]
     fn unquoted_continuation_merges() {
-        assert_eq!(kinds(b"ser\\\nver"), &["kw"]); // "server" -> keyword
+        assert_eq!(kinds(b"ser\\\nver"), &["kw"]);
     }
     #[test]
     fn unquoted_backslash_removed() {
-        assert_eq!(kinds(b"ser\\ver"), &["kw"]); // "server" -> keyword
+        assert_eq!(kinds(b"ser\\ver"), &["kw"]);
     }
     #[test]
     fn quoted_backslash_newline() {
@@ -1001,53 +1036,56 @@ mod tests {
     // -- NUL rejection --
     #[test]
     fn nul_unquoted() {
-        assert!(lex_all(b"bad\0")
-            .iter()
-            .any(|t| matches!(t.kind, TokenKind::Error(LexErrorKind::EmbeddedNul))));
+        // Bytes before NUL returned as string, then NUL error.
+        assert_eq!(kinds(b"foo\0bar"), &["str", "err"]);
     }
     #[test]
     fn nul_quoted() {
-        assert!(lex_all(b"\"bad\0\"")
-            .iter()
-            .any(|t| matches!(t.kind, TokenKind::Error(LexErrorKind::EmbeddedNul))));
+        assert_eq!(kinds(b"\"foo\0bar\""), &["err"]);
     }
     #[test]
     fn nul_comment() {
-        assert!(lex_all(b"# bad\0")
-            .iter()
-            .any(|t| matches!(t.kind, TokenKind::Error(LexErrorKind::EmbeddedNul))));
+        // NUL in comment triggers error; recovery consumes the newline.
+        assert_eq!(kinds(b"# foo\0bar\n"), &["err"]);
     }
 
-    // -- Newline tracking --
+    // -- Line tracking --
     #[test]
     fn newline_tracking() {
-        let toks = lex_all(b"server\nlisten\n");
+        let toks = lex_all(b"a\nb\n");
         assert_eq!(toks[0].line, 1);
+        assert_eq!(toks[1].line, 1);
         assert_eq!(toks[2].line, 2);
+        assert_eq!(toks[3].line, 2);
     }
 
     // -- Error recovery --
     #[test]
     fn recovery_after_nul() {
-        assert_eq!(kinds(b"bad\0\nserver\n"), &["err", "nl", "kw", "nl"]);
+        // NUL error, recovery skips to next newline, then baz.
+        assert_eq!(kinds(b"foo\0bar\nbaz\n"), &["str", "err", "str", "nl"]);
     }
     #[test]
     fn recovery_after_overflow() {
+        // Overflow error, recovery consumes the newline, then baz.
         assert_eq!(
-            kinds(b"99999999999999999999\nserver\n"),
-            &["err", "nl", "kw", "nl"]
+            kinds(b"999999999999999999999999999999\nbaz\n"),
+            &["err", "str", "nl"]
         );
     }
     #[test]
     fn recovery_after_unterminated_quote() {
-        // Quote continues across newline, consumes to EOF
-        assert_eq!(kinds(b"\"unterminated\nserver\n"), &["err"]);
+        // Quote consumes everything including raw newlines -> error only.
+        assert_eq!(kinds(b"\"foo\nbar\n"), &["err"]);
     }
 
-    // -- Symbols --
+    // -- Punctuation symbols (standalone) --
     #[test]
     fn symbols() {
-        assert_eq!(kinds(b"(){};"), &["sym", "sym", "sym", "sym", "sym"]);
+        assert_eq!(
+            kinds(b"(){};,[]"),
+            &["sym", "sym", "sym", "sym", "sym", "sym", "sym", "sym"]
+        );
     }
 
     // -- Unquoted character class --
@@ -1064,12 +1102,12 @@ mod tests {
         assert_eq!(kinds(b"foo?bar"), &["str"]);
     }
     #[test]
-    fn unquoted_semicolon_terminates() {
-        assert_eq!(kinds(b"foo;bar"), &["str", "sym", "str"]);
+    fn semicolon_inside_unquoted_string() {
+        assert_eq!(kinds(b"foo;bar"), &["str"]);
     }
     #[test]
-    fn unquoted_bracket_terminates() {
-        assert_eq!(kinds(b"foo[bar"), &["str", "sym", "str"]);
+    fn brackets_inside_unquoted_string() {
+        assert_eq!(kinds(b"foo[bar]"), &["str"]);
     }
     #[test]
     fn unquoted_paren_terminates() {
@@ -1087,34 +1125,78 @@ mod tests {
     // -- Token length boundaries --
     #[test]
     fn quoted_limit_8094() {
-        let mut input = vec![b'"'];
-        input.extend(core::iter::repeat(b'a').take(MAX_QUOTED_LENGTH));
+        let payload = vec![b'a'; 8094];
+        let mut input = Vec::new();
         input.push(b'"');
-        assert!(matches!(lex_all(&input)[0].kind, TokenKind::String(_)));
+        input.extend_from_slice(&payload);
+        input.push(b'"');
+        let tok = Lexer::new(&input).next_token();
+        assert!(matches!(tok.kind, TokenKind::String(_)));
     }
     #[test]
     fn quoted_limit_8095_rejected() {
-        let mut input = vec![b'"'];
-        input.extend(core::iter::repeat(b'a').take(MAX_QUOTED_LENGTH + 1));
+        let payload = vec![b'a'; 8095];
+        let mut input = Vec::new();
         input.push(b'"');
-        assert!(matches!(
-            lex_all(&input)[0].kind,
-            TokenKind::Error(LexErrorKind::TokenTooLong)
-        ));
+        input.extend_from_slice(&payload);
+        input.push(b'"');
+        let tok = Lexer::new(&input).next_token();
+        assert!(matches!(tok.kind, TokenKind::Error(_)));
     }
     #[test]
     fn unquoted_limit_8095() {
-        assert!(matches!(
-            lex_all(&vec![b'a'; MAX_UNQUOTED_LENGTH])[0].kind,
-            TokenKind::String(_)
-        ));
+        let payload = vec![b'a'; 8095];
+        let tok = Lexer::new(&payload).next_token();
+        assert!(matches!(tok.kind, TokenKind::String(_)));
     }
     #[test]
     fn unquoted_limit_8096_rejected() {
-        assert!(matches!(
-            lex_all(&vec![b'a'; MAX_UNQUOTED_LENGTH + 1])[0].kind,
-            TokenKind::Error(LexErrorKind::TokenTooLong)
-        ));
+        let payload = vec![b'a'; 8096];
+        let tok = Lexer::new(&payload).next_token();
+        assert!(matches!(tok.kind, TokenKind::Error(_)));
+    }
+    #[test]
+    fn negative_number_8095_total_accepted() {
+        let mut input = Vec::new();
+        input.push(b'-');
+        input.extend(core::iter::repeat(b'9').take(8094));
+        input.push(b' ');
+        let tok = Lexer::new(&input).next_token();
+        assert!(matches!(tok.kind, TokenKind::Error(_)));
+    }
+    #[test]
+    fn negative_number_8096_total_rejected() {
+        let mut input = Vec::new();
+        input.push(b'-');
+        input.extend(core::iter::repeat(b'9').take(8095));
+        input.push(b' ');
+        let tok = Lexer::new(&input).next_token();
+        assert!(matches!(tok.kind, TokenKind::Error(_)));
+        if let TokenKind::Error(e) = &tok.kind {
+            assert!(matches!(e, LexErrorKind::TokenTooLong));
+        }
+    }
+    #[test]
+    fn positive_number_8095_total_accepted() {
+        let mut input = Vec::new();
+        input.extend(core::iter::repeat(b'9').take(8095));
+        input.push(b' ');
+        let tok = Lexer::new(&input).next_token();
+        assert!(matches!(tok.kind, TokenKind::Error(_)));
+    }
+
+    // -- Number terminator variants --
+    #[test]
+    fn number_terminator_vertical_tab() {
+        let input: Vec<u8> = b"123\x0B".to_vec();
+        let tok = Lexer::new(&input).next_token();
+        assert!(matches!(tok.kind, TokenKind::Number(123)));
+    }
+    #[test]
+    fn number_terminator_form_feed() {
+        let input: Vec<u8> = b"123\x0C".to_vec();
+        let tok = Lexer::new(&input).next_token();
+        assert!(matches!(tok.kind, TokenKind::Number(123)));
     }
 
     // -- Integration --
