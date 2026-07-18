@@ -1,6 +1,6 @@
-# openntpd-rs-xtask
+# xtask
 
-[![crates.io](https://img.shields.io/crates/v/openntpd-rs-xtask.svg)](https://crates.io/crates/openntpd-rs-xtask)
+Build automation and freshness gating for the openntpd-rs workspace.
 
 Build automation and freshness gating for the
 [openntpd-rs](https://github.com/infinityabundance/openntpd-rs) workspace.
