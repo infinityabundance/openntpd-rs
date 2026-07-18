@@ -16,10 +16,10 @@
 //! | `ntp::msg`            | Implemented — internally tested     |
 //! | `util`                | Implemented — internally tested     |
 //! | `config` (AST types)  | Implemented — internally tested     |
+//! | `config` (lexer)      | Implemented — internally tested     |
 //!
 //! ## Planned surfaces
 //!
-//! - `config` lexer — tokenizer matching parse.y lexical rules
 //! - `config` parser — directive grammar
 //! - `config` runtime lowering — DNS resolution, peer creation
 //! - `peer` — client state machine
