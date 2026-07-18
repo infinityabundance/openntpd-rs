@@ -5,6 +5,8 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 description = "ntpctl control client binary for openntpd-rs"
+homepage.workspace = true
+repository.workspace = true
 
 [[bin]]
 name = "ntpctl"

@@ -5,6 +5,8 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 description = "Core deterministic NTP protocol engine for OpenNTPD-rs (no I/O, no host clock)"
+homepage.workspace = true
+repository.workspace = true
 
 [dependencies]
 libm = "0.2"

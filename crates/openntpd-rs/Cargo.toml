@@ -5,6 +5,8 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 description = "Umbrella facade crate for openntpd-rs (re-exports openntpd-rs-core)"
+homepage.workspace = true
+repository.workspace = true
 
 [lib]
 name = "openntpd_rs"
