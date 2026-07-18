@@ -11,8 +11,8 @@ name = "ntpd"
 path = "src/bin.rs"
 
 [dependencies]
-openntpd-rs-core = { path = "../openntpd-rs-core" }
-openntpd-rs-io = { path = "../openntpd-rs-io" }
+openntpd-rs-core = { path = "../openntpd-rs-core", version = "0.1.0" }
+openntpd-rs-io = { path = "../openntpd-rs-io", version = "0.1.0" }
 log = { workspace = true }
 env_logger = { workspace = true }
 anyhow = { workspace = true }

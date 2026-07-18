@@ -7,7 +7,7 @@ license.workspace = true
 description = "Real OS I/O layer for OpenNTPD-rs (libc syscall wrappers)"
 
 [dependencies]
-openntpd-rs-core = { path = "../openntpd-rs-core" }
+openntpd-rs-core = { path = "../openntpd-rs-core", version = "0.1.0" }
 libc = { workspace = true }
 log = { workspace = true, optional = true }
 
