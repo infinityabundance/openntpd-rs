@@ -15,7 +15,7 @@ edition = "2021"
 rust-version = "1.81"
 license = "MIT OR Apache-2.0"
 homepage = "https://www.openntpd.org/"
-repository = "https://github.com/openntpd-portable/openntpd-rs"
+repository = "https://github.com/infinityabundance/openntpd-rs"
 description = "Forensic Rust reconstruction of OpenNTPD's time-synchronization behavior"
 
 [workspace.dependencies]
