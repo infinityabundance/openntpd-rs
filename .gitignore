@@ -1,0 +1,41 @@
+# Generated files
+docs/generated/
+target/
+
+# Editor files
+*.swp
+*.swo
+*~
+\#*\#
+
+# IDE files
+.idea/
+.vscode/
+*.iml
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Rust
+Cargo.lock
+
+# Build artifacts
+*.o
+*.lo
+*.la
+*.a
+*.so
+*.dylib
+libtool
+config.status
+config.log
+config.h
+config.h.in
+stamp-h1
+Makefile
+Makefile.in
+
+# Oracle / research
+research/oracle/binaries/
+research/oracle/vms/

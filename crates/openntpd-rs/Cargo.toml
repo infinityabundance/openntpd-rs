@@ -1,0 +1,15 @@
+[package]
+name = "openntpd-rs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Umbrella facade crate for openntpd-rs (re-exports openntpd-rs-core)"
+
+[lib]
+name = "openntpd_rs"
+path = "src/lib.rs"
+
+[dependencies]
+openntpd-rs-core = { path = "../openntpd-rs-core" }
+openntpd-rs-io = { path = "../openntpd-rs-io" }

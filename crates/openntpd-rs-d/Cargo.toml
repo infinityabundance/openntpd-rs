@@ -1,0 +1,18 @@
+[package]
+name = "openntpd-rs-d"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "ntpd daemon binary for openntpd-rs"
+
+[[bin]]
+name = "ntpd"
+path = "src/bin.rs"
+
+[dependencies]
+openntpd-rs-core = { path = "../openntpd-rs-core" }
+openntpd-rs-io = { path = "../openntpd-rs-io" }
+log = { workspace = true }
+env_logger = { workspace = true }
+anyhow = { workspace = true }

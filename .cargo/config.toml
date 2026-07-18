@@ -1,0 +1,3 @@
+# Enable `cargo xtask <command>` as a shortcut for `cargo run -p xtask -- <command>`.
+[alias]
+xtask = "run -p xtask --"

@@ -1,0 +1,19 @@
+[package]
+name = "openntpd-rs-io"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Real OS I/O layer for OpenNTPD-rs (libc syscall wrappers)"
+
+[dependencies]
+openntpd-rs-core = { path = "../openntpd-rs-core" }
+libc = { workspace = true }
+log = { workspace = true, optional = true }
+
+[features]
+default = []
+
+[lib]
+name = "openntpd_rs_io"
+path = "src/lib.rs"

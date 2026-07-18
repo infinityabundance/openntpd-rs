@@ -1,0 +1,26 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/openntpd-rs-core",
+    "crates/openntpd-rs-io",
+    "crates/openntpd-rs",
+    "crates/openntpd-rs-d",
+    "crates/openntpd-rs-ctl",
+    "xtask",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.81"
+license = "MIT OR Apache-2.0"
+homepage = "https://www.openntpd.org/"
+repository = "https://github.com/openntpd-portable/openntpd-rs"
+description = "Forensic Rust reconstruction of OpenNTPD's time-synchronization behavior"
+
+[workspace.dependencies]
+log = "0.4"
+env_logger = "0.11"
+anyhow = "1"
+libc = "0.2"
+serde_json = "1"

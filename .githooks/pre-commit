@@ -1,0 +1,3 @@
+#!/bin/sh
+# Pre-commit hook: verify generated docs are fresh and no original C source exists.
+exec cargo xtask check && cargo xtask no-orig
