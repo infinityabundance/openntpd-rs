@@ -38,11 +38,29 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             }
         }
+        "forensic" => {
+            if let Err(e) = xtask::forensic::run() {
+                eprintln!("forensic audit failed: {e}");
+                return ExitCode::FAILURE;
+            }
+        }
         "no-orig" => {
             if let Err(e) = xtask::no_orig::run() {
                 eprintln!("no-orig check failed: {e}");
                 return ExitCode::FAILURE;
             }
+        }
+        "help" | "--help" | "-h" => {
+            eprintln!("Usage: cargo xtask <command>");
+            eprintln!();
+            eprintln!("Commands:");
+            eprintln!("  gen          Generate documentation");
+            eprintln!("  check        Verify generated docs are fresh");
+            eprintln!("  parity       Compare against real ntpd oracle");
+            eprintln!("  no-orig      Verify no original C source is present");
+            eprintln!("  forensic     Generate Doxygen-based forensic parity audit");
+            eprintln!("  completions  Generate shell completions");
+            return ExitCode::SUCCESS;
         }
         other => {
             eprintln!("unknown command: '{other}'");

@@ -10,7 +10,8 @@
 //! - `completions` — Generate shell completions.
 
 // Re-export subcommand modules.
-pub mod gen;
 pub mod check;
-pub mod parity;
+pub mod forensic;
+pub mod gen;
 pub mod no_orig;
+pub mod parity;
