@@ -8,6 +8,9 @@ description = "Build automation and freshness gating for OpenNTPD-rs"
 
 [dependencies]
 anyhow = { workspace = true }
+sha2 = "0.10"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 [lib]
 name = "xtask"
