@@ -26,6 +26,9 @@ Things `openntpd-rs` deliberately does **not** do yet.
 | Clock adjfreq (`io::clock`) | 3: adjtimex conversion, overflow |
 | Socket loopback (`io::socket`) | 6: IPv4/v6, bind options, timestamp |
 | imsg framework (`io::imsg`) | 14: wire format, socket pair, dispatcher, handlers |
+| NTP mode 3 query engine (`ntp::query`) | 37: query construction, response validation, peer update, timeout, integration |
+| NTP clock discipline (`ntp::clock`) | 48: PLL/FLL, step/slew, jitter, wander, filter, RMS |
+| Daemon event loop (`io::daemon`) | 31: poll loop, timers, NTP I/O, drift file, signal handling |
 
 ## Implemented — unverified against oracle
 
@@ -52,8 +55,11 @@ Things `openntpd-rs` deliberately does **not** do yet.
 - Runtime DNS resolution (child process via imsg)
 - TLS constraint connections (constraint validation)
 - Sensor device I/O (read /dev/pps0)
-- Daemon mode background (-d)
+- Daemon mode background fork (-d without -n)
 - Runtime privsep, SCM_RIGHTS, pledge/seccomp
+- DNS resolution child process
+- TLS constraint connections
+- Full daemon mode (background, signal-based lifecycle)
 
 ## Platform gaps
 

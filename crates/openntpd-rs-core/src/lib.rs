@@ -32,15 +32,21 @@
 //! | `dns`                 | Implemented — internally tested     |
 //! | `log`                 | Implemented — internally tested     |
 //!
-//! ## Planned surfaces (Phase 5+)
+//! ## Implemented surfaces (Phase 5+ runtime)
 //!
-//! - `daemon` — full event loop, clock discipline, poll dispatch
+//! | Surface               | Status                              |
+//! |-----------------------|-------------------------------------|
+//! | `ntp::query`          | Implemented — internally tested     |
+//! | `ntp::clock`          | Implemented — internally tested     |
+//!
+//! ## Planned (Phase 6+)
+//!
 //! - Runtime privilege separation (privsep fork, credential drop)
-//! - Actual NTP network queries (mode 3 client over UDP)
-//! - Full clock discipline (PLL/FLL via adjtimex)
 //! - TLS constraint connections
 //! - Sensor device I/O
-//! - Daemon background mode
+//! - DNS resolution child process
+//! - Full daemon mode (background, signal-based lifecycle)
+//! - seccomp/pledge sandboxing
 
 #![no_std]
 #![deny(unsafe_code)]

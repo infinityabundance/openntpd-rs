@@ -16,6 +16,7 @@
 //! sockaddr casts).
 
 pub mod clock;
+pub mod daemon;
 pub mod file;
 pub mod imsg;
 pub mod process;

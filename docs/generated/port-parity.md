@@ -9,6 +9,8 @@ OpenNTPD 7.9p1 translation units and their Rust counterparts.
 | `ntp.h` | `ntp` | Implemented — internally tested | 13 |
 | `ntp_msg.c` | `ntp::msg` | Implemented — internally tested | 4 |
 | `util.c` | `util` | Implemented — internally tested | 12 |
+| `client.c (query engine)` | `ntp::query` | Implemented — internally tested | 37 |
+| `ntpd.c (clock discipline)` | `ntp::clock` | Implemented — internally tested | 48 |
 | `config (AST types)` | `config::directive` | Implemented — internally tested | 31 |
 | `config (diagnostics)` | `config::diagnostic` | Implemented — internally tested | 3 |
 | `adjfreq_linux.c` | `io::clock` | Implemented — internally tested | 3 |
@@ -17,6 +19,7 @@ OpenNTPD 7.9p1 translation units and their Rust counterparts.
 | `ntpctl (CLI)` | `ntpctl (CLI)` | Implemented — unverified against oracle | — |
 | `adjtime_adjtimex.c` | `io::clock` | Implemented — unverified against oracle | — |
 | `bsd-setresuid.c` | `io::process` | Implemented — unverified against oracle | — |
+| `ntpd.c (event loop)` | `io::daemon` | Implemented — internally tested | — |
 | `socket (timestamping)` | `io::socket` | Implemented — unverified against oracle | — |
 | `parse.y (parser)` | `config::parser` | Implemented — internally tested | 60 |
 | `parse.y (lexer)` | `config::lexer` | Implemented — internally tested | 93 |
@@ -30,7 +33,7 @@ OpenNTPD 7.9p1 translation units and their Rust counterparts.
 | `dns.c` | `dns` | Implemented — internally tested | 26 |
 | `log.c` | `log` | Implemented — internally tested | 12 |
 
-**Total project tests: 475 (+ 3 xtask harness)**
+**Total project tests: 560 (+ 3 xtask harness)**
 
 ## Status definitions
 

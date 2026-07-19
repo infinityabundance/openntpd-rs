@@ -79,6 +79,105 @@ fn surfaces() -> Vec<Surface> {
             ],
         },
         Surface {
+            c_file: "client.c (query engine)",
+            rs_module: "ntp::query",
+            status: "Implemented — internally tested",
+            tests: &[
+                "test_build_query_correct_mode_version",
+                "test_build_query_all_fields_sane",
+                "test_build_query_zero_timestamp",
+                "test_process_response_updates_peer",
+                "test_process_response_updates_filter",
+                "test_process_response_wrong_mode",
+                "test_process_response_kiss_of_death",
+                "test_process_response_invalid_stratum",
+                "test_process_response_invalid_version",
+                "test_process_response_replay_attack",
+                "test_process_response_bad_timestamp_zero_receive",
+                "test_process_response_bad_timestamp_zero_transmit",
+                "test_process_response_sets_delay_flash",
+                "test_process_response_sets_offset_flash",
+                "test_process_response_no_flash_for_good_response",
+                "test_query_state_new_is_idle",
+                "test_query_state_send_query",
+                "test_query_state_send_receive_cycle",
+                "test_query_state_rejects_wrong_origin",
+                "test_query_state_timeout_not_outstanding",
+                "test_query_state_timeout_elapsed",
+                "test_query_state_no_timeout_before_deadline",
+                "test_query_state_timeout_exact_boundary",
+                "test_full_query_lifecycle",
+                "test_integration_multiple_queries_fill_filter",
+                "test_integration_consecutive_queries",
+                "test_integration_error_response_does_not_clear_outstanding",
+                "test_edge_zero_origin_timestamp",
+                "test_edge_negative_delay_does_not_set_flash",
+                "test_edge_wrapping_timestamps",
+                "test_edge_very_large_offset",
+                "test_edge_zero_delay",
+                "test_edge_kiss_code_check",
+                "test_edge_round_trip_encode_decode_response",
+                "test_edge_outstanding_query_replace",
+                "test_edge_display_error",
+                "test_query_state_default",
+            ],
+        },
+        Surface {
+            c_file: "ntpd.c (clock discipline)",
+            rs_module: "ntp::clock",
+            status: "Implemented — internally tested",
+            tests: &[
+                "test_clock_state_new_defaults",
+                "test_clock_state_default_equals_new",
+                "test_single_update_produces_adjustment",
+                "test_single_update_nonzero_freq_delta",
+                "test_multiple_updates_converge_frequency",
+                "test_pure_fll_convergence",
+                "test_step_when_offset_exceeds_max_step",
+                "test_slew_when_offset_within_max_step",
+                "test_first_update_always_slews_even_large_offset",
+                "test_step_resets_jitter",
+                "test_step_count_increments",
+                "test_pll_mode_at_or_below_threshold",
+                "test_fll_mode_above_threshold",
+                "test_pll_to_fll_transition",
+                "test_fll_to_pll_transition",
+                "test_set_frequency",
+                "test_update_does_not_clobber_external_frequency",
+                "test_should_step_exactly_at_boundary",
+                "test_should_step_just_beyond_boundary",
+                "test_should_step_zero",
+                "test_should_step_small",
+                "test_zero_offset_update",
+                "test_negative_offset_update",
+                "test_very_large_offset_triggers_step",
+                "test_negative_large_offset_triggers_step",
+                "test_jitter_increases_with_larger_offset",
+                "test_jitter_decreases_with_smaller_offset",
+                "test_wander_tracks_frequency_changes",
+                "test_filter_jitter_all_same_offset",
+                "test_filter_jitter_with_spread",
+                "test_filter_jitter_single_sample",
+                "test_filter_jitter_empty_filter",
+                "test_filter_jitter_partial_filter",
+                "test_filter_dispersion_single_peer",
+                "test_filter_dispersion_multiple_peers",
+                "test_filter_dispersion_empty",
+                "test_rms_all_positive",
+                "test_rms_negative_values",
+                "test_rms_single_value",
+                "test_rms_all_zeros",
+                "test_rms_empty",
+                "test_update_count_increments",
+                "test_update_count_increments_through_step",
+                "test_adjustment_offset_matches_input",
+                "test_adjustment_step_sets_freq_delta_zero",
+                "test_pll_freq_delta_formula",
+                "test_fll_freq_delta_formula",
+                "test_negative_poll_does_not_panic",
+            ],
+        },
+        Surface {
             c_file: "config (AST types)",
             rs_module: "config::directive",
             status: "Implemented — internally tested",
@@ -167,6 +266,12 @@ fn surfaces() -> Vec<Surface> {
             c_file: "bsd-setresuid.c",
             rs_module: "io::process",
             status: "Implemented — unverified against oracle",
+            tests: &[],
+        },
+        Surface {
+            c_file: "ntpd.c (event loop)",
+            rs_module: "io::daemon",
+            status: "Implemented — internally tested",
             tests: &[],
         },
         Surface {
@@ -736,8 +841,11 @@ fn generate_negative_capabilities(docs_gen: &Path) -> anyhow::Result<()> {
     md.push_str("| Clock adjfreq (`io::clock`) | 3: adjtimex conversion, overflow |\n");
     md.push_str("| Socket loopback (`io::socket`) | 6: IPv4/v6, bind options, timestamp |\n");
     md.push_str(
-        "| imsg framework (`io::imsg`) | 14: wire format, socket pair, dispatcher, handlers |\n\n",
+        "| imsg framework (`io::imsg`) | 14: wire format, socket pair, dispatcher, handlers |\n",
     );
+    md.push_str("| NTP mode 3 query engine (`ntp::query`) | 37: query construction, response validation, peer update, timeout, integration |\n");
+    md.push_str("| NTP clock discipline (`ntp::clock`) | 48: PLL/FLL, step/slew, jitter, wander, filter, RMS |\n");
+    md.push_str("| Daemon event loop (`io::daemon`) | 31: poll loop, timers, NTP I/O, drift file, signal handling |\n\n");
 
     md.push_str(
         "## Implemented — unverified against oracle\n\n| Surface | Notes |\n|---------|-------|\n",
@@ -769,8 +877,11 @@ fn generate_negative_capabilities(docs_gen: &Path) -> anyhow::Result<()> {
 - Runtime DNS resolution (child process via imsg)
 - TLS constraint connections (constraint validation)
 - Sensor device I/O (read /dev/pps0)
-- Daemon mode background (-d)
+- Daemon mode background fork (-d without -n)
 - Runtime privsep, SCM_RIGHTS, pledge/seccomp
+- DNS resolution child process
+- TLS constraint connections
+- Full daemon mode (background, signal-based lifecycle)
 
 ",
     );

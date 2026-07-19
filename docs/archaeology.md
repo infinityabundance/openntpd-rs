@@ -459,7 +459,7 @@ This is an additional security layer not available on portable platforms. On Lin
 | Event loop | 10% | 90% |
 | CLI flags | 80% | 20% |
 | Cross-platform support | 5% (Linux only) | 95% |
-| **Overall** | **~35%** | **~65%** |
+| **Overall** | **~48%** | **~52%** |
 
 
 
@@ -690,17 +690,19 @@ The Docker VM matrix (Debian, Ubuntu, Alpine, Fedora, FreeBSD) has been designed
 | Category | Estimated coverage | Estimated remaining |
 |----------|-------------------|---------------------|
 | NTP wire format | 15% | 85% |
-| NTP modes (3, 4, 5, 6, 7, 1/2) | 2% | 98% |
-| Config parsing | 60% | 40% |
-| Client state machine | 0% | 100% |
-| Server responder | 0% | 100% |
-| Control protocol | 0% | 100% |
-| Constraint validation | 0% | 100% |
-| Sensor framework | 0% | 100% |
-| DNS resolution | 0% | 100% |
-| Privilege separation | 0% | 100% |
-| Clock discipline | 0% | 100% |
-| Event loop | 5% | 95% |
-| CLI flags | 75% | 25% |
+| NTP modes (3, 4, 5, 6, 7, 1/2) | 15% | 85% |
+| Config parsing + runtime lowering | 80% | 20% |
+| Client state machine | 85% | 15% |
+| Server responder | 80% | 20% |
+| Control protocol | 75% | 25% |
+| Constraint validation | 80% | 20% |
+| Sensor framework | 75% | 25% |
+| DNS protocol types | 100% | 0% |
+| Logging subsystem | 80% | 20% |
+| Mode 3 client query engine | 90% | 10% |
+| Clock discipline (PLL/FLL) | 80% | 20% |
+| Event loop | 60% | 40% |
+| Privilege separation | 10% | 90% |
+| CLI flags | 80% | 20% |
 | Cross-platform support | 5% (Linux only) | 95% |
-| **Overall** | **~35%** | **~65%** |
+| **Overall** | **~48%** | **~52%** |
