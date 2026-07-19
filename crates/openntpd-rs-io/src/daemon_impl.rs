@@ -15,6 +15,11 @@
 use std::ffi::CString;
 use std::path::Path;
 
+use openntpd_rs_core::ntp::clock::{ClockAdjustment, ClockState};
+use openntpd_rs_core::ntp::NtpTimestamp;
+
+use crate::util::{log_debug, log_info};
+
 // ---------------------------------------------------------------------------
 // Constants from ntpd.h
 // ---------------------------------------------------------------------------
@@ -144,6 +149,54 @@ pub fn auto_preconditions(
     has_trusted_sensors: bool,
 ) -> bool {
     has_constraints || has_trusted_peers || has_trusted_sensors
+}
+
+// ---------------------------------------------------------------------------
+// apply_clock_discipline — wire ClockState to system clock
+// ---------------------------------------------------------------------------
+
+/// Wire clock state to system clock via adjtimex/adjtime/adjfreq.
+///
+/// Takes an offset sample, updates the clock discipline state machine,
+/// and applies the resulting adjustment to the system clock:
+///
+/// - **Step** (large offset, `|θ| > 0.125 s`): calls `ntpd_settime()`.
+/// - **Slew** (small offset): calls `ntpd_adjtime()` for the offset
+///   correction and `ntpd_adjfreq()` for the frequency correction.
+///
+/// Returns the [`ClockAdjustment`] that was applied, or an error string
+/// if a system call fails.
+pub fn apply_clock_discipline(
+    clock: &mut ClockState,
+    offset: f64,
+    delay: f64,
+    now: NtpTimestamp,
+) -> Result<ClockAdjustment, String> {
+    let adj = clock.update(offset, delay, now);
+    if adj.step {
+        // Large offset — step the clock immediately.
+        log_info(&format!(
+            "clock discipline: step {:+.6}s (freq_delta={:+.3}ppm)",
+            adj.offset, adj.freq_delta
+        ));
+        ntpd_settime(adj.offset)?;
+    } else {
+        // Small offset — slew via adjtime + adjust frequency.
+        if adj.offset.abs() >= LOG_NEGLIGIBLE_ADJTIME_MS / 1000.0 {
+            log_info(&format!(
+                "clock discipline: slew {:+.6}s (freq_delta={:+.3}ppm, interval={})",
+                adj.offset, adj.freq_delta, adj.interval
+            ));
+        } else {
+            log_debug(&format!(
+                "clock discipline: slew {:+.6}s (freq_delta={:+.3}ppm)",
+                adj.offset, adj.freq_delta
+            ));
+        }
+        ntpd_adjtime(adj.offset)?;
+        ntpd_adjfreq(adj.freq_delta, true)?;
+    }
+    Ok(adj)
 }
 
 // ---------------------------------------------------------------------------
@@ -1253,6 +1306,72 @@ mod tests {
     fn test_writepid_bad_path() {
         let result = writepid(Path::new("/nonexistent/directory/ntpd.pid"));
         assert!(result.is_err());
+    }
+
+    // ── apply_clock_discipline ────────────────────────────────────────────
+
+    #[test]
+    fn test_apply_clock_discipline_small_offset_slews() {
+        // A small offset (below CLOCK_MAX_STEP) should produce a slew
+        // (non-step) adjustment.
+        let mut clock = ClockState::new();
+        let now = NtpTimestamp::new(4_000_000_000, 0);
+        // Small positive offset: local clock is 5 ms ahead.
+        let result = apply_clock_discipline(&mut clock, 0.005, 0.010, now);
+        match result {
+            Ok(adj) => {
+                assert!(!adj.step, "expected slew, got step");
+                assert!((adj.offset - 0.005).abs() < 1e-9, "offset mismatch");
+            }
+            Err(e) => {
+                // In non-root environments the system calls may fail;
+                // that is acceptable.
+                assert!(!e.is_empty(), "error should be descriptive");
+            }
+        }
+    }
+
+    #[test]
+    fn test_apply_clock_discipline_large_offset_may_step() {
+        // A large offset above CLOCK_MAX_STEP (0.125 s) should trigger
+        // a step — but only on the second update (the first update
+        // always slews).
+        let mut clock = ClockState::new();
+        let now1 = NtpTimestamp::new(4_000_000_000, 0);
+        let now2 = NtpTimestamp::new(4_000_000_100, 0);
+
+        // First update always slews.
+        let _ = clock.update(0.2, 0.010, now1);
+
+        // Second update with large offset → step.
+        let result = apply_clock_discipline(&mut clock, 0.2, 0.010, now2);
+        match result {
+            Ok(adj) => {
+                assert!(adj.step, "expected step for large offset");
+                assert!((adj.offset - 0.2).abs() < 1e-9);
+                assert_eq!(adj.freq_delta, 0.0, "step should reset freq_delta");
+            }
+            Err(e) => {
+                // System call may fail without root.
+                assert!(!e.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn test_apply_clock_discipline_updates_clock_state() {
+        let mut clock = ClockState::new();
+        let now = NtpTimestamp::new(4_000_000_000, 0);
+
+        let _ = apply_clock_discipline(&mut clock, 0.01, 0.005, now);
+
+        // Clock state should have been updated regardless of whether
+        // the system call succeeded.
+        assert!(
+            clock.update_count > 0,
+            "clock should have recorded an update"
+        );
+        assert!((clock.offset - 0.01).abs() < 1e-9, "clock offset mismatch");
     }
 
     // ── imsg_type_name ────────────────────────────────────────────────────

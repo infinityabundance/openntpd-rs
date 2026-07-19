@@ -21,7 +21,8 @@ use openntpd_rs_io::daemon::{
     TimerAction,
 };
 use openntpd_rs_io::daemon_impl::{
-    ntpd_adjfreq, ntpd_adjtime, ntpd_settime, parent_dispatch_imsg, readfreq, ParentImsgAction,
+    apply_clock_discipline, ntpd_adjfreq, ntpd_adjtime, ntpd_settime, parent_dispatch_imsg,
+    readfreq, ParentImsgAction,
 };
 use openntpd_rs_io::imsg::{Imsg, ImsgError, ImsgSocket, IMSG_PARENT_SHUTDOWN};
 use openntpd_rs_io::ntp_child::{ChildConfig, NtpChildProcess};
@@ -193,9 +194,32 @@ fn run_daemon_foreground(config: &DaemonConfig) -> DaemonResult {
 
 /// Background daemon mode: daemonize (double-fork), write PID file,
 /// then privsep fork into parent/child with NtpChildProcess.
-fn run_daemon_background(config: &DaemonConfig) -> DaemonResult {
-    // Read, parse and lower config BEFORE daemonizing so errors are
-    // reported in the parent.
+///
+/// Steps:
+/// 1. Validate config first (in parent, so errors can be reported to stderr).
+/// 2. Read, parse and lower config (still in parent for error reporting).
+/// 3. `daemonize()` — double-fork.
+/// 4. Write PID file.
+/// 5. Set up syslog logging.
+/// 6. Create control socket.
+/// 7. Privsep fork into privileged parent + NTP child.
+pub fn run_daemon_background(config: &DaemonConfig) -> DaemonResult {
+    // Step 1: Validate config first (reports clean parse errors before fork).
+    let check = check_config_file(&config.config_path);
+    if !check.is_valid {
+        let mut message = String::new();
+        for err in &check.errors {
+            message.push_str(err);
+            message.push('\n');
+        }
+        return DaemonResult {
+            exit_code: EXIT_CONFIG,
+            message,
+        };
+    }
+
+    // Step 2: Read, parse and lower config BEFORE daemonizing so errors
+    // are still reported to the parent's stderr.
     let (runtime, _dns_requests) = match parse_config_file(&config.config_path) {
         Ok(r) => r,
         Err(e) => return e,
@@ -936,15 +960,17 @@ impl DaemonContext {
 
         match result {
             Ok((offset, delay)) => {
-                // Update clock discipline.
-                let adjustment = self.clock.update(offset, delay, recv_time);
-                if adjustment.step {
-                    // In a real daemon this would step the system clock.
-                    if cfg!(debug_assertions) {
-                        eprintln!(
-                            "ntpd: step clock by {:.6}s (peer {})",
-                            adjustment.offset, peer_idx
-                        );
+                // Apply clock discipline: update state and adjust system clock.
+                match apply_clock_discipline(&mut self.clock, offset, delay, recv_time) {
+                    Ok(adj) => {
+                        if cfg!(debug_assertions) && adj.step {
+                            eprintln!("ntpd: step clock by {:.6}s (peer {})", adj.offset, peer_idx);
+                        }
+                    }
+                    Err(e) => {
+                        if cfg!(debug_assertions) {
+                            eprintln!("ntpd: clock discipline error: {e}");
+                        }
                     }
                 }
                 Ok(())
@@ -2138,6 +2164,74 @@ mod tests {
         assert_eq!(peer_states.len(), 2);
         assert_eq!(peer_states[0].peer.weight, 1);
         assert_eq!(peer_states[1].peer.weight, 2);
+
+        std::fs::remove_file(&path).unwrap_or(());
+    }
+
+    // ── Background daemon config validation ──────────────────────────────
+
+    #[test]
+    fn run_daemon_background_with_invalid_config_returns_config_error() {
+        // Background mode with invalid config content should return
+        // EXIT_CONFIG (caught by check_config_file before any fork).
+        let dir = std::env::temp_dir();
+        let path = dir.join("ntpd_bg_config_error.conf");
+        std::fs::write(&path, b"listen on *\nserver pool.ntp.org weight 0\n").unwrap();
+
+        let config = DaemonConfig {
+            config_path: path.clone(),
+            debug_mode: false,
+            verbose: 0,
+            parent_proc: None,
+            pid_file: None,
+            config_test: false,
+        };
+
+        let result = run_daemon_background(&config);
+        assert_eq!(result.exit_code, EXIT_CONFIG);
+        assert!(!result.message.is_empty());
+
+        std::fs::remove_file(&path).unwrap_or(());
+    }
+
+    #[test]
+    fn run_daemon_background_with_invalid_path_returns_config_error() {
+        // Background mode with nonexistent config returns EXIT_CONFIG
+        // (caught by check_config_file before daemonize).
+        let config = DaemonConfig {
+            config_path: PathBuf::from("/nonexistent/bg_ntpd_test.conf"),
+            debug_mode: false,
+            verbose: 0,
+            parent_proc: None,
+            pid_file: None,
+            config_test: false,
+        };
+
+        let result = run_daemon_background(&config);
+        assert_eq!(result.exit_code, EXIT_CONFIG);
+        assert!(!result.message.is_empty());
+    }
+
+    #[test]
+    fn run_daemon_background_with_no_servers_returns_error() {
+        // Background mode with valid config but no servers should
+        // return EXIT_ERROR (before daemonize).
+        let dir = std::env::temp_dir();
+        let path = dir.join("ntpd_bg_no_servers.conf");
+        std::fs::write(&path, b"listen on *\n").unwrap();
+
+        let config = DaemonConfig {
+            config_path: path.clone(),
+            debug_mode: false,
+            verbose: 0,
+            parent_proc: None,
+            pid_file: None,
+            config_test: false,
+        };
+
+        let result = run_daemon_background(&config);
+        assert_eq!(result.exit_code, EXIT_ERROR);
+        assert!(!result.message.is_empty());
 
         std::fs::remove_file(&path).unwrap_or(());
     }

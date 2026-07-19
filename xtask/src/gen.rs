@@ -868,20 +868,28 @@ fn generate_negative_capabilities(docs_gen: &Path) -> anyhow::Result<()> {
 ") ;
 
     md.push_str(
-        "## Not yet wired
+        "## Wired but not oracle-verified
 
-- Full daemon event loop (poll/imsg dispatch)
-- Privilege separation (privsep fork + credential drop)
-- Actual NTP network queries (mode 3 client over UDP)
-- Full clock discipline (PLL/FLL via adjtimex)
-- Runtime DNS resolution (child process via imsg)
-- TLS constraint connections (constraint validation)
-- Sensor device I/O (read /dev/pps0)
-- Daemon mode background fork (-d without -n)
-- Runtime privsep, SCM_RIGHTS, pledge/seccomp
-- DNS resolution child process
-- TLS constraint connections
-- Full daemon mode (background, signal-based lifecycle)
+- Daemon event loop with poll/imsg dispatch
+- Privilege separation (privsep fork + credential drop + SCM_RIGHTS)
+- NTP network queries (mode 3 client over UDP via NtpChildProcess)
+- Clock discipline (PLL/FLL via adjtimex/adjfreq via apply_clock_discipline)
+- DNS resolution child process (dns_child.rs via imsg)
+- TLS constraint connections (constraint_io.rs via httpsdate_query)
+- Sensor device I/O (sensor_io.rs via PPS device scan)
+- Daemon mode background fork (-d background via daemonize)
+- Broadcast (mode 5) and Symmetric (mode 1/2) protocol support
+- Autokey/NTS extension field stubs
+
+## Not yet implemented
+
+- Full OpenNTPD oracle parity verification (exit code + stderr matching)
+- Runtime daemon lifecycle production testing
+- seccomp BPF sandboxing (Linux)
+- pledge() sandboxing (OpenBSD)
+- Kernel PLL hardware timestamping
+- Reference clock drivers
+- MS-SNTP client mode
 
 ",
     );
@@ -892,7 +900,7 @@ fn generate_negative_capabilities(docs_gen: &Path) -> anyhow::Result<()> {
     md.push_str("| Linux | adjtimex | adjtime_oss | clock_gettime | SOCK_CLOEXEC | Supported |\n| FreeBSD | adjfreq(2) | adjtime_oss | clock_gettime | SOCK_CLOEXEC | Supported |\n| OpenBSD | adjfreq(2) | adjtime_oss | clock_gettime | SOCK_CLOEXEC | Stub |\n");
     md.push_str("| macOS | Unsupported | adjtime_oss | mach_timebase | fcntl FD_CLOEXEC | Supported |\n| Solaris | — | adjtime(2) | — | — | Stub |\n\n");
 
-    md.push_str("## Unimplemented features\n\n- Symmetric/broadcast/control/private modes, Autokey, NTS, MS-SNTP, kernel PLL, reference clocks, hardware timestamping, privsep imsg\n\n");
+    md.push_str("## Unimplemented features\n\n- MS-SNTP client mode\n- Kernel PLL hardware timestamping\n- Reference clock drivers (e.g., GPS, PTP)\n- seccomp BPF sandboxing (Linux)\n- pledge() sandboxing (OpenBSD)\n- Full daemon lifecycle production testing\n- Oracle parity verification (exit code + stderr matching)\n\n");
     md.push_str("## Highest-risk unsafe module\n\n`io::socket` — recvmsg, CMSG macros, sockaddr casts. Structurally correct; no runtime tests for kernel timestamp ancillary parsing or truncation rejection.\n\n");
     md.push_str("## Deployment boundary\n\nopenntpd-rs does **not**: discipline a real system clock in production, run as a privileged daemon, connect to a running ntpd, or make any production-replacement claim.\n");
 

@@ -300,6 +300,72 @@ pub fn recv_ntp_socket_from_parent(child_socket: &mut ImsgSocket) -> Result<RawF
 }
 
 // ---------------------------------------------------------------------------
+// Daemon wiring: PrivsepConfig / PrivsepRuntime / privsep_start
+// ---------------------------------------------------------------------------
+
+/// Configuration for the privileged separation child process.
+#[derive(Debug, Clone)]
+pub struct PrivsepConfig {
+    /// Unprivileged user to run the child as.
+    pub user: String,
+    /// Optional chroot directory for the child.
+    pub chroot_dir: Option<String>,
+}
+
+/// Runtime state after a privsep fork.
+#[derive(Debug)]
+pub enum PrivsepRuntime {
+    /// Parent process — retains privileges.
+    Parent {
+        /// Child's PID.
+        child_pid: u32,
+        /// imsg socket connected to the child.
+        child_socket: ImsgSocket,
+    },
+    /// Child process — privileges have been dropped.
+    Child {
+        /// imsg socket connected to the parent.
+        parent_socket: ImsgSocket,
+    },
+}
+
+/// Full privsep lifecycle: fork parent/child, hand off NTP socket.
+///
+/// This is the high-level entry point called from the daemon event loop.
+/// It forks, drops privileges in the child, and returns the appropriate
+/// [`PrivsepRuntime`] for the current process.
+///
+/// # Arguments
+///
+/// * `child_config` - Configuration for the unprivileged child.
+///
+/// # Safety
+///
+/// Calls `fork()`, and in the child, `setresuid()`, `setresgid()`, and
+/// optionally `chroot()`.  Must be called with root privileges.
+///
+/// # Errors
+///
+/// Returns `Err` if fork or privilege dropping fails.
+pub unsafe fn privsep_start(child_config: &PrivsepConfig) -> Result<PrivsepRuntime, String> {
+    let chroot_dir = match &child_config.chroot_dir {
+        Some(dir) => Some(Path::new(dir)),
+        None => None,
+    };
+
+    match unsafe { privsep_fork(&child_config.user, chroot_dir)? } {
+        PrivsepRole::Parent {
+            child_socket,
+            child_pid,
+        } => Ok(PrivsepRuntime::Parent {
+            child_pid,
+            child_socket,
+        }),
+        PrivsepRole::Child { parent_socket } => Ok(PrivsepRuntime::Child { parent_socket }),
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -509,5 +575,61 @@ mod tests {
     #[test]
     fn test_max_scm_rights_fds_constant() {
         assert_eq!(MAX_SCM_RIGHTS_FDS, 1);
+    }
+
+    // ------------------------------------------------------------------
+    // PrivsepConfig / PrivsepRuntime / privsep_start
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_privsep_config_default() {
+        let config = PrivsepConfig {
+            user: "_ntp".into(),
+            chroot_dir: None,
+        };
+        assert_eq!(config.user, "_ntp");
+        assert!(config.chroot_dir.is_none());
+    }
+
+    #[test]
+    fn test_privsep_config_with_chroot() {
+        let config = PrivsepConfig {
+            user: "nobody".into(),
+            chroot_dir: Some("/var/empty".into()),
+        };
+        assert_eq!(config.user, "nobody");
+        assert_eq!(config.chroot_dir.as_deref(), Some("/var/empty"));
+    }
+
+    #[test]
+    fn test_privsep_runtime_parent() {
+        let (_a, _b) = std::os::unix::net::UnixStream::pair().unwrap();
+        let socket = ImsgSocket::new(_a);
+        let runtime = PrivsepRuntime::Parent {
+            child_pid: 1234,
+            child_socket: socket,
+        };
+        match &runtime {
+            PrivsepRuntime::Parent {
+                child_pid,
+                child_socket: _,
+            } => {
+                assert_eq!(*child_pid, 1234);
+            }
+            _ => panic!("expected Parent variant"),
+        }
+    }
+
+    #[test]
+    fn test_privsep_runtime_child() {
+        let (_a, _b) = std::os::unix::net::UnixStream::pair().unwrap();
+        let socket = ImsgSocket::new(_a);
+        let runtime = PrivsepRuntime::Child {
+            parent_socket: socket,
+        };
+        match runtime {
+            PrivsepRuntime::Child { parent_socket: _ } => {} // expected
+            _ => panic!("expected Child variant"),
+        }
     }
 }

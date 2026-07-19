@@ -46,20 +46,28 @@ Things `openntpd-rs` deliberately does **not** do yet.
 - **parse.y parser** (`config::parser`) — Implemented, 60 tests: directive grammar, option parsing, end-of-line enforcement, error recovery, spans, constraint URL splitting, semantic validation
 - **config.c runtime lowering** — Implemented: DNS request generation, listen/serve/constraint/sensor lowering, rtable, query from
 
-## Not yet wired
+## Wired but not oracle-verified
 
-- Full daemon event loop (poll/imsg dispatch)
-- Privilege separation (privsep fork + credential drop)
-- Actual NTP network queries (mode 3 client over UDP)
-- Full clock discipline (PLL/FLL via adjtimex)
-- Runtime DNS resolution (child process via imsg)
-- TLS constraint connections (constraint validation)
-- Sensor device I/O (read /dev/pps0)
-- Daemon mode background fork (-d without -n)
-- Runtime privsep, SCM_RIGHTS, pledge/seccomp
-- DNS resolution child process
-- TLS constraint connections
-- Full daemon mode (background, signal-based lifecycle)
+- Daemon event loop with poll/imsg dispatch
+- Privilege separation (privsep fork + credential drop + SCM_RIGHTS)
+- NTP network queries (mode 3 client over UDP via NtpChildProcess)
+- Clock discipline (PLL/FLL via adjtimex/adjfreq via apply_clock_discipline)
+- DNS resolution child process (dns_child.rs via imsg)
+- TLS constraint connections (constraint_io.rs via httpsdate_query)
+- Sensor device I/O (sensor_io.rs via PPS device scan)
+- Daemon mode background fork (-d background via daemonize)
+- Broadcast (mode 5) and Symmetric (mode 1/2) protocol support
+- Autokey/NTS extension field stubs
+
+## Not yet implemented
+
+- Full OpenNTPD oracle parity verification (exit code + stderr matching)
+- Runtime daemon lifecycle production testing
+- seccomp BPF sandboxing (Linux)
+- pledge() sandboxing (OpenBSD)
+- Kernel PLL hardware timestamping
+- Reference clock drivers
+- MS-SNTP client mode
 
 ## Platform gaps
 
@@ -73,7 +81,13 @@ Things `openntpd-rs` deliberately does **not** do yet.
 
 ## Unimplemented features
 
-- Symmetric/broadcast/control/private modes, Autokey, NTS, MS-SNTP, kernel PLL, reference clocks, hardware timestamping, privsep imsg
+- MS-SNTP client mode
+- Kernel PLL hardware timestamping
+- Reference clock drivers (e.g., GPS, PTP)
+- seccomp BPF sandboxing (Linux)
+- pledge() sandboxing (OpenBSD)
+- Full daemon lifecycle production testing
+- Oracle parity verification (exit code + stderr matching)
 
 ## Highest-risk unsafe module
 

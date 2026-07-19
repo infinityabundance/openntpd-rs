@@ -330,6 +330,196 @@ impl DnsProbeResult {
 pub use crate::dns_io::host_dns;
 
 // ---------------------------------------------------------------------------
+// Daemon wiring: start_dns_child / request_dns_resolution / poll_dns_child
+// ---------------------------------------------------------------------------
+
+/// A DNS resolution response from the child process.
+#[derive(Debug, Clone)]
+pub struct DnsResponse {
+    /// The id that was sent with the original request.
+    pub id: u32,
+    /// Resolved IP addresses (empty on failure).
+    pub addresses: Vec<std::net::IpAddr>,
+    /// Whether the resolution succeeded.
+    pub success: bool,
+}
+
+/// Start the DNS child process.
+///
+/// Creates a socketpair, forks, and the child enters `ntp_dns_main`.
+/// Returns the child's PID on success (from the parent's perspective).
+///
+/// # Arguments
+///
+/// * `imsg_fd` - The file descriptor of the parent's end of the imsg
+///   socketpair, to be passed to the child.
+///
+/// # Errors
+///
+/// Returns `Err` if the socketpair creation or fork fails.
+pub fn start_dns_child(imsg_fd: i32) -> Result<u32, String> {
+    // SAFETY: fork + child execution.  The child process calls
+    // ntp_dns_main which handles its side of the protocol.
+    let pid = unsafe { libc::fork() };
+    if pid < 0 {
+        return Err(format!(
+            "fork for DNS child failed: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+
+    if pid == 0 {
+        // Child process
+        // SAFETY: we are in the forked child; we own imsg_fd.
+        match ntp_dns_main(imsg_fd) {
+            Ok(_) => unsafe { libc::_exit(0) },
+            Err(e) => {
+                #[cfg(feature = "log")]
+                log::error!("DNS child exited with error: {}", e);
+                let _ = e;
+                unsafe { libc::_exit(1) }
+            }
+        }
+    }
+
+    // Parent returns child PID.
+    Ok(pid as u32)
+}
+
+/// Send a DNS resolution request to the child process.
+///
+/// The hostname is sent as a null-terminated byte string in the imsg
+/// payload.  The `id` is embedded in the peer_id field of the imsg
+/// header so that responses can be correlated.
+///
+/// # Arguments
+///
+/// * `parent_socket` - The parent's imsg socket connected to the child.
+/// * `hostname` - The hostname to resolve.
+/// * `id` - A caller-chosen identifier for correlating the response.
+///
+/// # Errors
+///
+/// Returns `Err` if the imsg send fails.
+pub fn request_dns_resolution(
+    parent_socket: &mut ImsgSocket,
+    hostname: &str,
+    id: u32,
+) -> Result<(), String> {
+    let mut payload = hostname.as_bytes().to_vec();
+    payload.push(0); // null terminator, matching C convention
+
+    let mut msg = Imsg::new(IMSG_HOST_DNS, payload);
+    msg.header.peer_id = id;
+
+    parent_socket
+        .send(&msg)
+        .map_err(|e| format!("failed to send DNS request: {}", e))
+}
+
+/// Poll the DNS child for responses.
+///
+/// Non-blocking: reads any available imsg from the child and parses
+/// them into `DnsResponse` entries.  If no message is available,
+/// returns an empty vec (not an error).
+///
+/// # Arguments
+///
+/// * `dns_socket` - The parent's imsg socket connected to the child.
+///
+/// # Errors
+///
+/// Returns `Err` only on unexpected I/O errors (not on "no data").
+pub fn poll_dns_child(dns_socket: &mut ImsgSocket) -> Result<Vec<DnsResponse>, String> {
+    let mut responses = Vec::new();
+
+    // Try to read messages in a non-blocking fashion.
+    // We use a short timeout on the underlying stream.
+    let raw_fd = dns_socket.as_raw_fd();
+
+    loop {
+        // Use poll to check if data is available.
+        let mut pollfd = libc::pollfd {
+            fd: raw_fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+
+        // SAFETY: poll with a single fd, zero timeout (non-blocking check).
+        let ret = unsafe { libc::poll(&mut pollfd, 1, 0) };
+        if ret < 0 {
+            let err = std::io::Error::last_os_error();
+            if err.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(format!("poll_dns_child poll failed: {}", err));
+        }
+        if ret == 0 || (pollfd.revents & libc::POLLIN) == 0 {
+            // No data available.
+            break;
+        }
+
+        match dns_socket.recv() {
+            Ok(imsg) => {
+                let id = imsg.header.peer_id;
+
+                // Parse payload: first 4 bytes = count, then 16-byte addresses.
+                if imsg.payload.len() < 4 {
+                    responses.push(DnsResponse {
+                        id,
+                        addresses: Vec::new(),
+                        success: false,
+                    });
+                    continue;
+                }
+
+                let count = u32::from_be_bytes(imsg.payload[0..4].try_into().unwrap()) as usize;
+                let mut addrs = Vec::with_capacity(count);
+
+                for i in 0..count {
+                    let offset = 4 + i * 16;
+                    if offset + 16 > imsg.payload.len() {
+                        break;
+                    }
+                    let addr_bytes: [u8; 16] =
+                        imsg.payload[offset..offset + 16].try_into().unwrap();
+                    // Check if it's an IPv4-mapped IPv6 address.
+                    if addr_bytes[0..12] == [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff] {
+                        let v4 = std::net::Ipv4Addr::new(
+                            addr_bytes[12],
+                            addr_bytes[13],
+                            addr_bytes[14],
+                            addr_bytes[15],
+                        );
+                        addrs.push(std::net::IpAddr::V4(v4));
+                    } else {
+                        let v6 = std::net::Ipv6Addr::from(addr_bytes);
+                        addrs.push(std::net::IpAddr::V6(v6));
+                    }
+                }
+
+                responses.push(DnsResponse {
+                    id,
+                    success: count > 0,
+                    addresses: addrs,
+                });
+            }
+            Err(e) => {
+                // If the connection was closed, we just stop.
+                match e {
+                    crate::imsg::ImsgError::ConnectionClosed => break,
+                    _ => {
+                        return Err(format!("poll_dns_child recv error: {}", e));
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(responses)
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -425,5 +615,156 @@ mod tests {
         assert!(payload.len() >= 4);
         let count = u32::from_be_bytes(payload[0..4].try_into().unwrap());
         assert!(count >= 1, "expected at least 1 address, got {}", count);
+    }
+
+    // ------------------------------------------------------------------
+    // DnsResponse, request_dns_resolution, poll_dns_child
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_dns_response_struct() {
+        let r = DnsResponse {
+            id: 42,
+            addresses: vec![
+                std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1)),
+                std::net::IpAddr::V6(std::net::Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1)),
+            ],
+            success: true,
+        };
+        assert_eq!(r.id, 42);
+        assert_eq!(r.addresses.len(), 2);
+        assert!(r.success);
+
+        let r2 = DnsResponse {
+            id: 7,
+            addresses: vec![],
+            success: false,
+        };
+        assert!(!r2.success);
+        assert!(r2.addresses.is_empty());
+    }
+
+    #[test]
+    fn test_request_dns_resolution_sends_to_child() {
+        let (mut parent, _child) = ImsgSocket::pair().unwrap();
+
+        let result = request_dns_resolution(&mut parent, "example.com", 1);
+        assert!(result.is_ok(), "send should succeed: {:?}", result);
+    }
+
+    #[test]
+    fn test_request_dns_resolution_sets_peer_id() {
+        let (mut parent, mut child) = ImsgSocket::pair().unwrap();
+
+        request_dns_resolution(&mut parent, "test.host", 99).unwrap();
+
+        let received = child.recv().unwrap();
+        assert_eq!(received.header.peer_id, 99);
+        assert_eq!(received.header.type_, IMSG_HOST_DNS);
+
+        // Payload should be hostname + null terminator.
+        let payload = String::from_utf8(received.payload.clone()).unwrap();
+        assert_eq!(payload.trim_end_matches('\0'), "test.host");
+    }
+
+    #[test]
+    fn test_poll_dns_child_no_data() {
+        let (mut parent, _child) = ImsgSocket::pair().unwrap();
+
+        // Should return an empty vec (not an error) when no data.
+        // But poll_dns_child needs a reference to the parent socket,
+        // not the child.  Actually poll_dns_child is called from the
+        // parent side after the child has sent data.  In this test
+        // we haven't sent anything, so we'll get an empty vec.
+        let responses = poll_dns_child(&mut parent).unwrap();
+        assert!(
+            responses.is_empty(),
+            "expected no responses: {:?}",
+            responses
+        );
+    }
+
+    #[test]
+    fn test_poll_dns_child_reads_responses() {
+        let (parent, mut child) = ImsgSocket::pair().unwrap();
+        let mut parent = parent;
+
+        // Simulate the child sending a DNS response back to parent.
+        let mut payload = Vec::new();
+        let count = 1u32;
+        payload.extend_from_slice(&count.to_be_bytes());
+        // IPv4-mapped IPv6 for 127.0.0.1
+        let mut addr = [0u8; 16];
+        addr[10] = 0xff;
+        addr[11] = 0xff;
+        addr[12] = 127;
+        addr[13] = 0;
+        addr[14] = 0;
+        addr[15] = 1;
+        payload.extend_from_slice(&addr);
+
+        let mut msg = Imsg::new(IMSG_HOST_DNS, payload);
+        msg.header.peer_id = 42;
+        child.send(&msg).unwrap();
+
+        // Give the OS a moment to transfer the data.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        let responses = poll_dns_child(&mut parent).unwrap();
+        assert_eq!(responses.len(), 1, "expected 1 response: {:?}", responses);
+        assert_eq!(responses[0].id, 42);
+        assert!(responses[0].success);
+        assert_eq!(
+            responses[0].addresses,
+            vec![std::net::IpAddr::V4(std::net::Ipv4Addr::new(127, 0, 0, 1))]
+        );
+    }
+
+    #[test]
+    fn test_poll_dns_child_empty_response() {
+        let (parent, mut child) = ImsgSocket::pair().unwrap();
+        let mut parent = parent;
+
+        // Simulate child sending a failure response (count=0).
+        let payload = 0u32.to_be_bytes().to_vec();
+        let mut msg = Imsg::new(IMSG_HOST_DNS, payload);
+        msg.header.peer_id = 7;
+        child.send(&msg).unwrap();
+
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        let responses = poll_dns_child(&mut parent).unwrap();
+        assert_eq!(responses.len(), 1);
+        assert_eq!(responses[0].id, 7);
+        assert!(!responses[0].success);
+        assert!(responses[0].addresses.is_empty());
+    }
+
+    #[test]
+    fn test_request_and_poll_roundtrip() {
+        // Test the full roundtrip: parent sends request, child dispatches
+        // it (via dns_dispatch_imsg_inner), parent polls for response.
+        let (mut parent, mut child) = ImsgSocket::pair().unwrap();
+
+        // Parent sends request
+        request_dns_resolution(&mut parent, "127.0.0.1", 123).unwrap();
+
+        // Child receives and dispatches
+        let req = child.recv().unwrap();
+        assert_eq!(req.header.type_, IMSG_HOST_DNS);
+        assert_eq!(req.header.peer_id, 123);
+        dns_dispatch_imsg_inner(&mut child, &req).unwrap();
+
+        // Read the response directly via blocking recv (more reliable than poll).
+        let resp = parent.recv().unwrap();
+        assert_eq!(resp.header.type_, IMSG_HOST_DNS);
+
+        // Parse payload: first 4 bytes = count, then 16-byte addresses.
+        assert!(resp.payload.len() >= 4);
+        let count = u32::from_be_bytes(resp.payload[0..4].try_into().unwrap()) as usize;
+        assert!(count > 0, "expected at least 1 address in DNS response");
+
+        // Verify at least one address is present (should be 127.0.0.1).
+        assert!(resp.payload.len() >= 4 + count * 16);
     }
 }

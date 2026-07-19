@@ -13,7 +13,7 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use openntpd_rs_core::sensor::Sensor;
-use openntpd_rs_core::sensor::SensorReading;
+use openntpd_rs_core::sensor::SensorReading as CoreSensorReading;
 
 /// Maximum device name length (matches `MAXDEVNAMLEN` in C).
 pub const MAXDEVNAMLEN: usize = 16;
@@ -243,7 +243,7 @@ pub fn sensor_update(device: &str, _reading: f64) {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs() as i64;
-        let sensor_reading = SensorReading::new(
+        let sensor_reading = CoreSensorReading::new(
             now_unix, 0, // nsecs
             now_unix,
         );
@@ -291,6 +291,66 @@ pub fn sensor_hotplugfd() -> Result<Option<i32>, String> {
         let _ = ();
         Ok(None)
     }
+}
+
+// ---------------------------------------------------------------------------
+// Daemon wiring: run_sensor_cycle / query_all_sensors
+// ---------------------------------------------------------------------------
+
+/// A sensor reading returned from the daemon sensor query worker.
+///
+/// This is distinct from [`CoreSensorReading`] in the core crate:
+/// it is a top-level I/O result rather than a timestamped reading
+/// on a specific sensor.
+#[derive(Debug, Clone)]
+pub struct SensorReading {
+    /// Device name (e.g. "pps0").
+    pub device: String,
+    /// Clock offset in seconds, if a reading was obtained.
+    pub offset: Option<f64>,
+    /// Error message, if the query failed.
+    pub error: Option<String>,
+}
+
+/// Run a sensor scan cycle. Returns discovered sensor device names.
+///
+/// This is a thin wrapper around [`sensor_scan`] for use from the daemon
+/// event loop.  On non-Linux platforms it returns an empty vec.
+pub fn run_sensor_cycle() -> Result<Vec<String>, String> {
+    sensor_scan()
+}
+
+/// Query all known sensors. Returns readings for each device.
+///
+/// Iterates over the provided device names, probes each one (to verify
+/// it is still a valid time sensor), then queries its current value.
+/// Devices that fail at any stage are returned with an error field set.
+pub fn query_all_sensors(devices: &[String]) -> Vec<SensorReading> {
+    let mut readings = Vec::with_capacity(devices.len());
+
+    for device in devices {
+        // First ensure the sensor is registered.
+        // probe/query will handle errors gracefully.
+        match sensor_query(device) {
+            Ok(Some((offset, _correction))) => readings.push(SensorReading {
+                device: device.clone(),
+                offset: Some(offset),
+                error: None,
+            }),
+            Ok(None) => readings.push(SensorReading {
+                device: device.clone(),
+                offset: None,
+                error: Some("no data available".into()),
+            }),
+            Err(e) => readings.push(SensorReading {
+                device: device.clone(),
+                offset: None,
+                error: Some(e),
+            }),
+        }
+    }
+
+    readings
 }
 
 /// Handle a hotplug event from the sensor hotplug fd.
@@ -598,5 +658,74 @@ mod tests {
             let sensors = lock_sensors();
             assert!(sensors.get("good_sensor").unwrap().good);
         }
+    }
+
+    // ------------------------------------------------------------------
+    // run_sensor_cycle / query_all_sensors / SensorReading
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_sensor_reading_struct() {
+        let r = SensorReading {
+            device: "pps0".into(),
+            offset: Some(0.0015),
+            error: None,
+        };
+        assert_eq!(r.device, "pps0");
+        assert_eq!(r.offset, Some(0.0015));
+        assert!(r.error.is_none());
+
+        let r2 = SensorReading {
+            device: "pps1".into(),
+            offset: None,
+            error: Some("device not found".into()),
+        };
+        assert!(r2.offset.is_none());
+        assert_eq!(r2.error.as_deref(), Some("device not found"));
+    }
+
+    #[test]
+    fn test_run_sensor_cycle_returns_vec() {
+        // This should always succeed, though on non-Linux it returns empty.
+        let devices = run_sensor_cycle().expect("sensor cycle should not fail");
+        println!("sensor cycle found {} devices", devices.len());
+    }
+
+    #[test]
+    fn test_query_all_sensors_empty() {
+        let readings = query_all_sensors(&[]);
+        assert!(readings.is_empty());
+    }
+
+    #[test]
+    fn test_query_all_sensors_nonexistent() {
+        // Querying devices that exist in the registry but not on real hardware
+        // should produce error entries, not panic.
+        sensor_init();
+        let devices = vec!["pps0".to_string(), "pps1".to_string()];
+        // Without adding them, query_all_sensors will return errors via
+        // sensor_query which checks the registry.
+        let readings = query_all_sensors(&devices);
+        assert_eq!(readings.len(), 2);
+        for r in &readings {
+            assert!(
+                r.error.is_some(),
+                "expected error for unregistered device (device not found): {:?}",
+                r
+            );
+        }
+    }
+
+    #[test]
+    fn test_query_all_sensors_registered() {
+        sensor_init();
+        sensor_add("pps0");
+        let devices = vec!["pps0".to_string()];
+        let readings = query_all_sensors(&devices);
+        assert_eq!(readings.len(), 1);
+        // On non-Linux this returns error "no data available"; on Linux
+        // it may return Ok(None) which also becomes an error.
+        // Either way, a SensorReading is returned without panic.
+        assert_eq!(readings[0].device, "pps0");
     }
 }

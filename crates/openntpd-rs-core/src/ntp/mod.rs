@@ -460,6 +460,20 @@ pub mod kiss {
     pub const DROP: [u8; 4] = *b"DROP";
     /// Server has no stratum source.
     pub const NSTR: [u8; 4] = *b"NSTR";
+
+    /// Convenience `u32` variants of the same codes.
+    pub mod id {
+        /// Rate limit — reduce polling frequency.
+        pub const RATE: u32 = u32::from_be_bytes(super::RATE);
+        /// Deny access.
+        pub const DENY: u32 = u32::from_be_bytes(super::DENY);
+        /// Access denied by server.
+        pub const RESTRICT: u32 = u32::from_be_bytes(super::RESTRICT);
+        /// Drop — access control violation.
+        pub const DROP: u32 = u32::from_be_bytes(super::DROP);
+        /// Server has no stratum source.
+        pub const NSTR: u32 = u32::from_be_bytes(super::NSTR);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -537,6 +551,8 @@ pub fn unix_to_ntp(unix_secs: i64, nsec: u32) -> (u32, u32) {
 // Submodules
 // ---------------------------------------------------------------------------
 
+pub mod auth;
+pub mod broadcast;
 pub mod clock;
 pub mod engine;
 pub mod msg;
@@ -694,5 +710,53 @@ mod tests {
         let packet_raw: u32 = 100_050_000;
         let resolved = resolve_era(packet_raw, now_abs).unwrap();
         assert_eq!(resolved, 2 * NTP_ERA + 100_050_000);
+    }
+
+    // ── Kiss-o'-Death constants ───────────────────────────────────────
+
+    #[test]
+    fn test_kiss_rate_code() {
+        assert_eq!(kiss::RATE, *b"RATE");
+        assert_eq!(kiss::id::RATE, u32::from_be_bytes(*b"RATE"));
+    }
+
+    #[test]
+    fn test_kiss_deny_code() {
+        assert_eq!(kiss::DENY, *b"DENY");
+        assert_eq!(kiss::id::DENY, u32::from_be_bytes(*b"DENY"));
+    }
+
+    #[test]
+    fn test_kiss_restrict_code() {
+        assert_eq!(kiss::RESTRICT, *b"RSTR");
+        assert_eq!(kiss::id::RESTRICT, u32::from_be_bytes(*b"RSTR"));
+    }
+
+    #[test]
+    fn test_kiss_drop_code() {
+        assert_eq!(kiss::DROP, *b"DROP");
+        assert_eq!(kiss::id::DROP, u32::from_be_bytes(*b"DROP"));
+    }
+
+    #[test]
+    fn test_kiss_nstr_code() {
+        assert_eq!(kiss::NSTR, *b"NSTR");
+        assert_eq!(kiss::id::NSTR, u32::from_be_bytes(*b"NSTR"));
+    }
+
+    #[test]
+    fn test_kiss_id_constants_are_distinct() {
+        let ids = [
+            kiss::id::RATE,
+            kiss::id::DENY,
+            kiss::id::RESTRICT,
+            kiss::id::DROP,
+            kiss::id::NSTR,
+        ];
+        for i in 0..ids.len() {
+            for j in (i + 1)..ids.len() {
+                assert_ne!(ids[i], ids[j], "kiss codes {i} and {j} should differ");
+            }
+        }
     }
 }

@@ -14,7 +14,9 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::time::{Duration, Instant};
 
-use openntpd_rs_core::constraint::{HttpsDateQuery, HttpsDateResult, CONSTRAINT_TIMEOUT_SECS};
+use openntpd_rs_core::constraint::{
+    ConstraintEndpoint, HttpsDateQuery, HttpsDateResult, CONSTRAINT_TIMEOUT_SECS,
+};
 
 /// Timeout for a single TLS read operation (milliseconds).
 const TLS_READ_TIMEOUT_MS: u64 = 100;
@@ -375,6 +377,82 @@ pub fn httpsdate_free(query: HttpsDateQuery) {
 }
 
 // ---------------------------------------------------------------------------
+// Daemon wiring: run_constraint_cycle / constraint_query_worker
+// ---------------------------------------------------------------------------
+
+/// Result of querying a single constraint endpoint, returned to the daemon
+/// event loop.
+#[derive(Debug, Clone)]
+pub struct ConstraintResult {
+    /// Hostname that was queried.
+    pub host: String,
+    /// Parsed `Date:` header timestamp (Unix seconds), if the query succeeded.
+    pub date: Option<i64>,
+    /// Error message, if the query failed.
+    pub error: Option<String>,
+}
+
+/// Run a single constraint query cycle against one endpoint.
+///
+/// Connects to `host:port`, sends an HTTP HEAD request for `path`, parses
+/// the `Date:` response header, and returns the parsed timestamp.
+///
+/// # Returns
+///
+/// - `Ok((true, timestamp))` on success.
+/// - `Ok((false, 0))` if the server responded but without a valid Date header.
+/// - `Err(msg)` on connection / protocol errors.
+pub fn run_constraint_cycle(
+    host: &str,
+    path: &str,
+    port: u16,
+    timeout_secs: i64,
+) -> Result<(bool, i64), String> {
+    let query = HttpsDateQuery::new(host, path, port);
+    match httpsdate_query(&query, timeout_secs) {
+        Ok(result) => Ok((true, result.date)),
+        Err(e) => Err(e),
+    }
+}
+
+/// Constraint query worker — called from the daemon poll loop.
+///
+/// Iterates over all configured constraint endpoints, queries each one,
+/// and returns a vector of results.  Non-responsive endpoints produce
+/// an error result rather than failing the entire batch.
+///
+/// This function wraps each individual query in a timeout-safety check
+/// but does **not** spawn separate threads — the daemon is expected to
+/// manage its own concurrency.
+pub fn constraint_query_worker(constraints: &[ConstraintEndpoint]) -> Vec<ConstraintResult> {
+    let mut results = Vec::with_capacity(constraints.len());
+
+    for ep in constraints {
+        let result =
+            run_constraint_cycle(&ep.host, &ep.path, ep.port, CONSTRAINT_TIMEOUT_SECS as i64);
+        match result {
+            Ok((true, date)) => results.push(ConstraintResult {
+                host: ep.host.clone(),
+                date: Some(date),
+                error: None,
+            }),
+            Ok((false, _)) => results.push(ConstraintResult {
+                host: ep.host.clone(),
+                date: None,
+                error: Some("no valid Date header in response".into()),
+            }),
+            Err(e) => results.push(ConstraintResult {
+                host: ep.host.clone(),
+                date: None,
+                error: Some(e),
+            }),
+        }
+    }
+
+    results
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -622,5 +700,70 @@ mod tests {
         };
         let result = httpsdate_request(&query, &tv, 0);
         assert!(result.is_err());
+    }
+
+    // ------------------------------------------------------------------
+    // run_constraint_cycle / constraint_query_worker
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_constraint_result_struct() {
+        let r = ConstraintResult {
+            host: "example.com".into(),
+            date: Some(1_700_000_000),
+            error: None,
+        };
+        assert_eq!(r.host, "example.com");
+        assert_eq!(r.date, Some(1_700_000_000));
+        assert!(r.error.is_none());
+
+        let r2 = ConstraintResult {
+            host: "bad.example".into(),
+            date: None,
+            error: Some("timeout".into()),
+        };
+        assert!(r2.date.is_none());
+        assert_eq!(r2.error.as_deref(), Some("timeout"));
+    }
+
+    #[test]
+    fn test_run_constraint_cycle_connection_refused() {
+        // Querying a closed port should fail.
+        let result = run_constraint_cycle("127.0.0.1", "/", 1, 2);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_constraint_query_worker_empty() {
+        let results = constraint_query_worker(&[]);
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_constraint_query_worker_all_fail() {
+        let endpoints = vec![
+            ConstraintEndpoint {
+                host: "127.0.0.1".into(),
+                path: "/".into(),
+                port: 1,
+                address: None,
+            },
+            ConstraintEndpoint {
+                host: "127.0.0.1".into(),
+                path: "/date".into(),
+                port: 2,
+                address: None,
+            },
+        ];
+        let results = constraint_query_worker(&endpoints);
+        assert_eq!(results.len(), 2);
+        for r in &results {
+            assert!(r.date.is_none(), "expected no date for failed query");
+            assert!(
+                r.error.is_some(),
+                "expected error for failed query: {:?}",
+                r
+            );
+        }
     }
 }
