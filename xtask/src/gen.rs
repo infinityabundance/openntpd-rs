@@ -176,6 +176,40 @@ fn surfaces() -> Vec<Surface> {
             tests: &[],
         },
         Surface {
+            c_file: "parse.y (parser)",
+            rs_module: "config::parser",
+            status: "Implemented — internally tested",
+            tests: &[
+                "blank_lines",
+                "constraint_single",
+                "constraint_single_with_pinned",
+                "constraint_with_path",
+                "constraints_pool",
+                "directive_span",
+                "empty_config",
+                "error_skips_to_next_line",
+                "lexer_error_passthrough",
+                "listen_hostname",
+                "listen_missing_on",
+                "listen_numeric",
+                "listen_wildcard",
+                "multiple_directives",
+                "query_from_hostname_rejected",
+                "query_from_ipv4",
+                "query_from_ipv6",
+                "sensor_all_options",
+                "sensor_invalid_correction",
+                "sensor_invalid_stratum",
+                "sensor_invalid_weight",
+                "sensor_minimal",
+                "server_invalid_weight_rejected",
+                "server_minimal",
+                "server_pool",
+                "server_with_options",
+                "unknown_keyword_at_start",
+            ],
+        },
+        Surface {
             c_file: "parse.y (lexer)",
             rs_module: "config::lexer",
             status: "Implemented — internally tested",
@@ -276,12 +310,6 @@ fn surfaces() -> Vec<Surface> {
             ],
         },
         Surface {
-            c_file: "parse.y (parser)",
-            rs_module: "config (planned)",
-            status: "Planned",
-            tests: &[],
-        },
-        Surface {
             c_file: "config.c (lowering)",
             rs_module: "config (planned)",
             status: "Planned",
@@ -358,6 +386,12 @@ fn generate_negative_capabilities(docs_gen: &Path) -> anyhow::Result<()> {
         .expect("lexer surface exists")
         .tests
         .len();
+    let parser_tests = surfaces()
+        .iter()
+        .find(|surface| surface.rs_module == "config::parser")
+        .expect("parser surface exists")
+        .tests
+        .len();
 
     md.push_str("## Implemented — internally tested\n\n| Module | Tests |\n|--------|-------|\n");
     md.push_str("| NTP wire (`ntp`) | 13: wire format, unsigned dispersion, era 0–2 |\n");
@@ -384,7 +418,9 @@ fn generate_negative_capabilities(docs_gen: &Path) -> anyhow::Result<()> {
     md.push_str(&format!(
         "- **parse.y lexer** (`config::lexer`) — Implemented, {lexer_tests} tests: cursor, keywords, numbers, quoted strings, NUL rejection, backslash-newline, error recovery, char class, token length boundaries, negative number limits, escaped-quote opening, spans\n"
     ));
-    md.push_str("- **parse.y parser** — **Planned**: directive grammar, semantic validation\n");
+    md.push_str(&format!(
+        "- **parse.y parser** (`config::parser`) — Implemented, {parser_tests} tests: directive grammar, option parsing, end-of-line enforcement, error recovery, spans\n"
+    ));
     md.push_str("- **config.c runtime lowering** — **Planned**: DNS resolution, peer creation\n\n");
 
     md.push_str("## Not yet wired\n\n- NTP poll loop, clock discipline, source selection, control socket, constraint validation, sensor framework, DNS, privsep\n\n");

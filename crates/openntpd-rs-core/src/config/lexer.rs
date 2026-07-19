@@ -223,6 +223,11 @@ impl<'a> Lexer<'a> {
         }
     }
 
+    /// Current raw byte offset in the input.  Exposed for parser span tracking.
+    pub fn offset(&self) -> usize {
+        self.offset
+    }
+
     fn save_cursor(&self) -> CursorState {
         CursorState {
             offset: self.offset,
