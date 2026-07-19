@@ -363,12 +363,12 @@ impl fmt::Display for RefId {
 /// (platform-dependent).  This stores the raw parsed u32; target-specific
 /// upper-bound checking is deferred to semantic lowering.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct RoutingTable(u32);
+pub struct RoutingTable(i64);
 impl RoutingTable {
-    pub fn new(rt: u32) -> Self {
+    pub fn new(rt: i64) -> Self {
         Self(rt)
     }
-    pub fn get(self) -> u32 {
+    pub fn get(self) -> i64 {
         self.0
     }
 }

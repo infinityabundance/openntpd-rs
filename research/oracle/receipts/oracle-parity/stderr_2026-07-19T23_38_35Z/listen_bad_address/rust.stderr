@@ -1,0 +1,3 @@
+/home/one/openntpd-rs/target/parity/debug/ntpd: OpenNTPD-rs (forensic reconstruction)
+/home/one/openntpd-rs/target/parity/debug/ntpd: 10:25: listen address must be a valid IP address or '*', got '999.999.999.999'
+

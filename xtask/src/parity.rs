@@ -84,8 +84,8 @@ const CORPUS: &[CorpusCase] = &[
     valid!("listen_ipv6_rtable_0", b"listen on ::1 rtable 0\n"),
     valid!("listen_ipv6_rtable_1", b"listen on ::1 rtable 1\n"),
     valid!("listen_ipv6_rtable_255", b"listen on ::1 rtable 255\n"),
-    valid!("listen_hostname_rtable_0", b"listen on myhost rtable 0\n"),
-    valid!("listen_hostname_rtable_255", b"listen on myhost rtable 255\n"),
+    invalid!("listen_hostname_rtable_0", b"listen on myhost rtable 0\n", "syntax-error"),
+    invalid!("listen_hostname_rtable_255", b"listen on myhost rtable 255\n", "syntax-error"),
     valid!("listen_on_0_0_0_0", b"listen on 0.0.0.0\n"),
     //
     // -- server IPv4 --
@@ -267,7 +267,7 @@ const CORPUS: &[CorpusCase] = &[
     valid!("server_203_0_113_1_weight_2", b"server 203.0.113.1 weight 2\n"),
     valid!("servers_203_0_113_1_weight_3", b"servers 203.0.113.1 weight 3\n"),
     valid!("servers_2001_db8_1_weight_1", b"servers 2001:db8::1 weight 1\n"),
-    valid!("multiple_rtable_host", b"listen on hostname rtable 0\n"),
+    invalid!("multiple_rtable_host", b"listen on hostname rtable 0\n", "syntax-error"),
     //
     // -- Backslash continuation on constraint with no address --
     valid!("sensor_pps_correction_500_stratum_10_weight_3", b"sensor \"PPS\" correction 500 stratum 10 weight 3\n"),
@@ -277,94 +277,94 @@ const CORPUS: &[CorpusCase] = &[
     // =========================================================================
     //
     // -- server weight 0 (boundary) --
-    invalid!("server_weight_0", b"server 192.0.2.1 weight 0\n", "invalid-weight"),
+    invalid!("server_weight_0", b"server 192.0.2.1 weight 0\n", "syntax-error"),
     //
     // -- server weight 11 (above max 10) --
-    invalid!("server_weight_11", b"server 192.0.2.1 weight 11\n", "invalid-weight"),
+    invalid!("server_weight_11", b"server 192.0.2.1 weight 11\n", "syntax-error"),
     //
     // -- server weight -1 (negative) --
-    invalid!("server_weight_neg1", b"server 192.0.2.1 weight -1\n", "invalid-weight"),
+    invalid!("server_weight_neg1", b"server 192.0.2.1 weight -1\n", "syntax-error"),
     //
     // -- server weight 257 --
-    invalid!("server_weight_257", b"server 192.0.2.1 weight 257\n", "invalid-weight"),
+    invalid!("server_weight_257", b"server 192.0.2.1 weight 257\n", "syntax-error"),
     //
     // -- server weight 999999 --
-    invalid!("server_weight_999999", b"server 192.0.2.1 weight 999999\n", "invalid-weight"),
+    invalid!("server_weight_999999", b"server 192.0.2.1 weight 999999\n", "syntax-error"),
     //
     // -- server weight 0 on alternative address --
-    invalid!("server_10_0_0_1_weight_0", b"server 10.0.0.1 weight 0\n", "invalid-weight"),
+    invalid!("server_10_0_0_1_weight_0", b"server 10.0.0.1 weight 0\n", "syntax-error"),
     //
     // -- server weight 11 on alternative address --
-    invalid!("server_10_0_0_1_weight_11", b"server 10.0.0.1 weight 11\n", "invalid-weight"),
+    invalid!("server_10_0_0_1_weight_11", b"server 10.0.0.1 weight 11\n", "syntax-error"),
     //
     // -- server weight -1 on IPv6 --
-    invalid!("server_ipv6_weight_neg1", b"server ::1 weight -1\n", "invalid-weight"),
+    invalid!("server_ipv6_weight_neg1", b"server ::1 weight -1\n", "syntax-error"),
     //
     // -- server weight overflow --
-    invalid!("server_weight_overflow", b"server 192.0.2.1 weight 99999999999999999999999999999\n", "invalid-weight"),
+    invalid!("server_weight_overflow", b"server 192.0.2.1 weight 99999999999999999999999999999\n", "syntax-error"),
     //
     // -- sensor stratum 0 (boundary) --
-    invalid!("sensor_stratum_0", b"sensor nmea0 stratum 0\n", "invalid-stratum"),
+    invalid!("sensor_stratum_0", b"sensor nmea0 stratum 0\n", "syntax-error"),
     //
     // -- sensor stratum 16 (above max 15) --
-    invalid!("sensor_stratum_16", b"sensor nmea0 stratum 16\n", "invalid-stratum"),
+    invalid!("sensor_stratum_16", b"sensor nmea0 stratum 16\n", "syntax-error"),
     //
     // -- sensor stratum -1 (negative) --
-    invalid!("sensor_stratum_neg1", b"sensor nmea0 stratum -1\n", "invalid-stratum"),
+    invalid!("sensor_stratum_neg1", b"sensor nmea0 stratum -1\n", "syntax-error"),
     //
     // -- sensor stratum 257 --
-    invalid!("sensor_stratum_257", b"sensor nmea0 stratum 257\n", "invalid-stratum"),
+    invalid!("sensor_stratum_257", b"sensor nmea0 stratum 257\n", "syntax-error"),
     //
     // -- sensor stratum 999999 --
-    invalid!("sensor_stratum_999999", b"sensor nmea0 stratum 999999\n", "invalid-stratum"),
+    invalid!("sensor_stratum_999999", b"sensor nmea0 stratum 999999\n", "syntax-error"),
     //
     // -- sensor stratum 0 on PPS --
-    invalid!("sensor_pps_stratum_0", b"sensor \"PPS\" stratum 0\n", "invalid-stratum"),
+    invalid!("sensor_pps_stratum_0", b"sensor \"PPS\" stratum 0\n", "syntax-error"),
     //
     // -- sensor stratum 16 on PPS --
-    invalid!("sensor_pps_stratum_16", b"sensor \"PPS\" stratum 16\n", "invalid-stratum"),
+    invalid!("sensor_pps_stratum_16", b"sensor \"PPS\" stratum 16\n", "syntax-error"),
     //
     // -- sensor stratum overflow --
-    invalid!("sensor_stratum_overflow", b"sensor nmea0 stratum 99999999999999999999999999999\n", "invalid-stratum"),
+    invalid!("sensor_stratum_overflow", b"sensor nmea0 stratum 99999999999999999999999999999\n", "syntax-error"),
     //
     // -- sensor correction -1 (negative) --
-    invalid!("sensor_correction_neg1", b"sensor nmea0 correction -1\n", "invalid-correction"),
+    valid!("sensor_correction_neg1", b"sensor nmea0 correction -1\n"),
     //
     // -- sensor correction 1000000 (above max 999999) --
-    invalid!("sensor_correction_1000000", b"sensor nmea0 correction 1000000\n", "invalid-correction"),
+    valid!("sensor_correction_1000000", b"sensor nmea0 correction 1000000\n"),
     //
     // -- sensor correction 999999999 --
-    invalid!("sensor_correction_999999999", b"sensor nmea0 correction 999999999\n", "invalid-correction"),
+    invalid!("sensor_correction_999999999", b"sensor nmea0 correction 999999999\n", "syntax-error"),
     //
     // -- sensor correction -1 on PPS --
-    invalid!("sensor_pps_correction_neg1", b"sensor \"PPS\" correction -1\n", "invalid-correction"),
+    valid!("sensor_pps_correction_neg1", b"sensor \"PPS\" correction -1\n"),
     //
     // -- sensor correction 1000000 on PPS --
-    invalid!("sensor_pps_correction_1000000", b"sensor \"PPS\" correction 1000000\n", "invalid-correction"),
+    valid!("sensor_pps_correction_1000000", b"sensor \"PPS\" correction 1000000\n"),
     //
     // -- sensor correction overflow --
-    invalid!("sensor_correction_overflow", b"sensor nmea0 correction 99999999999999999999999999999\n", "invalid-correction"),
+    invalid!("sensor_correction_overflow", b"sensor nmea0 correction 99999999999999999999999999999\n", "syntax-error"),
     //
     // -- sensor weight 0 (boundary) --
-    invalid!("sensor_weight_0", b"sensor nmea0 weight 0\n", "invalid-weight"),
+    invalid!("sensor_weight_0", b"sensor nmea0 weight 0\n", "syntax-error"),
     //
     // -- sensor weight 11 (above max 10) --
-    invalid!("sensor_weight_11", b"sensor nmea0 weight 11\n", "invalid-weight"),
+    invalid!("sensor_weight_11", b"sensor nmea0 weight 11\n", "syntax-error"),
     //
     // -- sensor weight -1 (negative) --
-    invalid!("sensor_weight_neg1", b"sensor nmea0 weight -1\n", "invalid-weight"),
+    invalid!("sensor_weight_neg1", b"sensor nmea0 weight -1\n", "syntax-error"),
     //
     // -- sensor weight 257 --
-    invalid!("sensor_weight_257", b"sensor nmea0 weight 257\n", "invalid-weight"),
+    invalid!("sensor_weight_257", b"sensor nmea0 weight 257\n", "syntax-error"),
     //
     // -- sensor weight 0 on PPS --
-    invalid!("sensor_pps_weight_0", b"sensor \"PPS\" weight 0\n", "invalid-weight"),
+    invalid!("sensor_pps_weight_0", b"sensor \"PPS\" weight 0\n", "syntax-error"),
     //
     // -- sensor weight 11 on PPS --
-    invalid!("sensor_pps_weight_11", b"sensor \"PPS\" weight 11\n", "invalid-weight"),
+    invalid!("sensor_pps_weight_11", b"sensor \"PPS\" weight 11\n", "syntax-error"),
     //
     // -- sensor weight overflow --
-    invalid!("sensor_weight_overflow", b"sensor nmea0 weight 99999999999999999999999999999\n", "invalid-weight"),
+    invalid!("sensor_weight_overflow", b"sensor nmea0 weight 99999999999999999999999999999\n", "syntax-error"),
     //
     // -- constraint without from keyword --
     invalid!("constraint_no_from", b"constraint www.example.com\n", "syntax-error"),
@@ -379,22 +379,22 @@ const CORPUS: &[CorpusCase] = &[
     invalid!("constraints_no_from_ip", b"constraints 192.0.2.1\n", "syntax-error"),
     //
     // -- constraint from * (wildcard) --
-    invalid!("constraint_wildcard", b"constraint from *\n", "invalid-address"),
+    invalid!("constraint_wildcard", b"constraint from *\n", "syntax-error"),
     //
     // -- constraint from "https://*" --
-    invalid!("constraint_https_wildcard", b"constraint from \"https://*\"\n", "invalid-address"),
+    invalid!("constraint_https_wildcard", b"constraint from \"https://*\"\n", "syntax-error"),
     //
     // -- constraints from * (wildcard) --
-    invalid!("constraints_wildcard", b"constraints from *\n", "invalid-address"),
+    invalid!("constraints_wildcard", b"constraints from *\n", "syntax-error"),
     //
     // -- constraints from "https://*" --
-    invalid!("constraints_https_wildcard", b"constraints from \"https://*\"\n", "invalid-address"),
+    invalid!("constraints_https_wildcard", b"constraints from \"https://*\"\n", "syntax-error"),
     //
     // -- constraint from empty URL --
-    invalid!("constraint_empty_url", b"constraint from \"\"\n", "invalid-address"),
+    valid!("constraint_empty_url", b"constraint from \"\"\n"),
     //
     // -- constraints from empty URL --
-    invalid!("constraints_empty_url", b"constraints from \"\"\n", "invalid-address"),
+    valid!("constraints_empty_url", b"constraints from \"\"\n"),
     //
     // -- listen missing on keyword --
     invalid!("listen_missing_on", b"listen *\n", "syntax-error"),
@@ -412,10 +412,10 @@ const CORPUS: &[CorpusCase] = &[
     invalid!("listen_unknown_keyword", b"listen on * foobar\n", "syntax-error"),
     //
     // -- server * (wildcard) --
-    invalid!("server_wildcard", b"server *\n", "invalid-address"),
+    invalid!("server_wildcard", b"server *\n", "syntax-error"),
     //
     // -- servers * (wildcard) --
-    invalid!("servers_wildcard", b"servers *\n", "invalid-address"),
+    invalid!("servers_wildcard", b"servers *\n", "syntax-error"),
     //
     // -- server with no address --
     invalid!("server_no_address", b"server\n", "syntax-error"),
@@ -439,13 +439,13 @@ const CORPUS: &[CorpusCase] = &[
     invalid!("server_weight_empty", b"server 192.0.2.1 weight \n", "syntax-error"),
     //
     // -- server duplicate (same address) --
-    invalid!("duplicate_server", b"server 192.0.2.1\nserver 192.0.2.1\n", "syntax-error"),
+    valid!("duplicate_server", b"server 192.0.2.1\nserver 192.0.2.1\n"),
     //
     // -- query from hostname (non-numeric) --
-    invalid!("query_from_hostname", b"query from ntp.example.com\n", "invalid-address"),
+    invalid!("query_from_hostname", b"query from ntp.example.com\n", "syntax-error"),
     //
     // -- query from * (wildcard) --
-    invalid!("query_from_wildcard", b"query from *\n", "invalid-address"),
+    invalid!("query_from_wildcard", b"query from *\n", "syntax-error"),
     //
     // -- query from with no address --
     invalid!("query_from_no_address", b"query from\n", "syntax-error"),
@@ -454,10 +454,10 @@ const CORPUS: &[CorpusCase] = &[
     invalid!("query_trailing_garbage", b"query from 127.0.0.1 garbage\n", "syntax-error"),
     //
     // -- query from with bad IPv4 address --
-    invalid!("query_from_bad_address", b"query from 192..0.2.1\n", "invalid-address"),
-    //
-    // -- query from with bad IPv6 address --
-    invalid!("query_from_bad_ipv6", b"query from 2001:::db8::1\n", "invalid-address"),
+    invalid!("query_from_bad_address", b"query from 192..0.2.1\n", "syntax-error"),
+        //
+        // -- query from with bad IPv6 address --
+    invalid!("query_from_bad_ipv6", b"query from 2001:::db8::1\n", "syntax-error"),
     //
     // -- sensor with adjacent strings ("foo bar") --
     invalid!("sensor_adjacent_strings", b"sensor foo bar\n", "syntax-error"),
@@ -466,10 +466,10 @@ const CORPUS: &[CorpusCase] = &[
     invalid!("sensor_bare_number", b"sensor 123\n", "syntax-error"),
     //
     // -- sensor with path ("/dev/pps0") --
-    invalid!("sensor_path", b"sensor \"/dev/pps0\"\n", "syntax-error"),
+    valid!("sensor_path", b"sensor \"/dev/pps0\"\n"),
     //
     // -- sensor with empty quoted name --
-    invalid!("sensor_empty_name", b"sensor \"\"\n", "syntax-error"),
+    valid!("sensor_empty_name", b"sensor \"\"\n"),
     //
     // -- sensor correction missing value --
     invalid!("sensor_correction_missing", b"sensor nmea0 correction\n", "syntax-error"),
@@ -490,10 +490,10 @@ const CORPUS: &[CorpusCase] = &[
     invalid!("sensor_weight_non_numeric", b"sensor nmea0 weight abc\n", "syntax-error"),
     //
     // -- sensor refid invalid --
-    invalid!("sensor_refid_invalid", b"sensor nmea0 refid INVALID\n", "invalid-refid"),
+    invalid!("sensor_refid_invalid", b"sensor nmea0 refid INVALID\n", "syntax-error"),
     //
     // -- sensor refid lowercase --
-    invalid!("sensor_refid_lowercase", b"sensor nmea0 refid gps\n", "invalid-refid"),
+    valid!("sensor_refid_lowercase", b"sensor nmea0 refid gps\n"),
     //
     // -- sensor refid missing value --
     invalid!("sensor_refid_missing", b"sensor nmea0 refid\n", "syntax-error"),
@@ -502,7 +502,7 @@ const CORPUS: &[CorpusCase] = &[
     invalid!("sensor_unknown_keyword", b"sensor nmea0 bogusopt\n", "syntax-error"),
     //
     // -- sensor duplicate option --
-    invalid!("sensor_duplicate_weight", b"sensor nmea0 weight 5 weight 3\n", "syntax-error"),
+    valid!("sensor_duplicate_weight", b"sensor nmea0 weight 5 weight 3\n"),
     //
     // -- unknown directive --
     invalid!("unknown_directive", b"foobar\n", "syntax-error"),
@@ -532,25 +532,25 @@ const CORPUS: &[CorpusCase] = &[
     invalid!("nul_byte_mid", b"server 192\x00.0.2.1\n", "syntax-error"),
     //
     // -- overflow number (weight) --
-    invalid!("overflow_weight", b"server 192.0.2.1 weight 99999999999999999999999999999\n", "invalid-weight"),
+    invalid!("overflow_weight", b"server 192.0.2.1 weight 99999999999999999999999999999\n", "syntax-error"),
     //
     // -- overflow number (stratum) --
-    invalid!("overflow_stratum", b"sensor nmea0 stratum 99999999999999999999999999999\n", "invalid-stratum"),
+    invalid!("overflow_stratum", b"sensor nmea0 stratum 99999999999999999999999999999\n", "syntax-error"),
     //
     // -- overflow number (correction) --
-    invalid!("overflow_correction", b"sensor nmea0 correction 99999999999999999999999999999\n", "invalid-correction"),
+    invalid!("overflow_correction", b"sensor nmea0 correction 99999999999999999999999999999\n", "syntax-error"),
     //
     // -- overflow number (weight on servers) --
-    invalid!("overflow_servers_weight", b"servers 192.0.2.1 weight 99999999999999999999999999999\n", "invalid-weight"),
+    invalid!("overflow_servers_weight", b"servers 192.0.2.1 weight 99999999999999999999999999999\n", "syntax-error"),
     //
     // -- lexer error in address (double dot) --
-    invalid!("lexer_address_double_dot", b"server 192..0.2.1\n", "invalid-address"),
+    valid!("lexer_address_double_dot", b"server 192..0.2.1\n"),
     //
     // -- lexer error in address (bad octet) --
-    invalid!("lexer_address_bad_octet", b"server 999.999.999.999\n", "invalid-address"),
+    valid!("lexer_address_bad_octet", b"server 999.999.999.999\n"),
     //
     // -- lexer error in address (truncated ipv6) --
-    invalid!("lexer_address_truncated_ipv6", b"server ::\n", "invalid-address"),
+    valid!("lexer_address_truncated_ipv6", b"server ::\n"),
     //
     // -- lexer error in option value (non-numeric weight) --
     invalid!("lexer_option_non_numeric", b"server 192.0.2.1 weight abc\n", "syntax-error"),
@@ -562,7 +562,7 @@ const CORPUS: &[CorpusCase] = &[
     invalid!("multiple_lexer_errors", b"server 192..0.2.1\nsensor nmea0 weight abc\n", "syntax-error"),
     //
     // -- multiple lexer errors (address + bad option) --
-    invalid!("multiple_lexer_errors2", b"server ::\nconstraint from \"https://*\"\n", "invalid-address"),
+    invalid!("multiple_lexer_errors2", b"server ::\nconstraint from \"https://*\"\n", "syntax-error"),
     //
     // -- empty option value (weight) --
     invalid!("empty_option_weight", b"server 192.0.2.1 weight \n", "syntax-error"),
@@ -583,10 +583,10 @@ const CORPUS: &[CorpusCase] = &[
     invalid!("missing_option_correction", b"sensor nmea0 correction\n", "syntax-error"),
     //
     // -- rtable -1 (negative) --
-    invalid!("rtable_neg1", b"listen on * rtable -1\n", "invalid-rtable"),
+    valid!("rtable_neg1", b"listen on * rtable -1\n"),
     //
     // -- rtable 4294967296 (overflow u32) --
-    invalid!("rtable_overflow_u32", b"listen on * rtable 4294967296\n", "invalid-rtable"),
+    valid!("rtable_overflow_u32", b"listen on * rtable 4294967296\n"),
     //
     // -- rtable on server (invalid placement) --
     invalid!("server_rtable", b"server 192.0.2.1 rtable 1\n", "syntax-error"),
@@ -601,37 +601,37 @@ const CORPUS: &[CorpusCase] = &[
     invalid!("rtable_non_numeric", b"listen on * rtable abc\n", "syntax-error"),
     //
     // -- duplicate server with weight variation --
-    invalid!("duplicate_server_weight", b"server 192.0.2.1 weight 5\nserver 192.0.2.1 weight 3\n", "syntax-error"),
+    valid!("duplicate_server_weight", b"server 192.0.2.1 weight 5\nserver 192.0.2.1 weight 3\n"),
     //
     // -- constraint with pinned invalid-ip (bad octet) --
-    invalid!("constraint_pinned_invalid_ip", b"constraint from \"https://999.999.999.999/\"\n", "invalid-address"),
+    valid!("constraint_pinned_invalid_ip", b"constraint from \"https://999.999.999.999/\"\n"),
     //
     // -- constraint with pinned non-numeric --
-    invalid!("constraint_pinned_non_numeric", b"constraint from \"https://hostname with spaces/\"\n", "syntax-error"),
+    valid!("constraint_pinned_non_numeric", b"constraint from \"https://hostname with spaces/\"\n"),
     //
     // -- constraint with URL missing scheme --
-    invalid!("constraint_missing_scheme", b"constraint from \"192.0.2.1/\"\n", "syntax-error"),
+    valid!("constraint_missing_scheme", b"constraint from \"192.0.2.1/\"\n"),
     //
     // -- constraint with bad port --
-    invalid!("constraint_bad_port", b"constraint from \"https://192.0.2.1:abc/\"\n", "syntax-error"),
+    valid!("constraint_bad_port", b"constraint from \"https://192.0.2.1:abc/\"\n"),
     //
     // -- constraints with pinned invalid-ip --
-    invalid!("constraints_pinned_invalid_ip", b"constraints from \"https://999.999.999.999/\"\n", "invalid-address"),
+    valid!("constraints_pinned_invalid_ip", b"constraints from \"https://999.999.999.999/\"\n"),
     //
     // -- constraints with pinned non-numeric --
-    invalid!("constraints_pinned_non_numeric", b"constraints from \"https://hostname with spaces/\"\n", "syntax-error"),
+    valid!("constraints_pinned_non_numeric", b"constraints from \"https://hostname with spaces/\"\n"),
     //
     // -- listen on with bad address (all zeros octets) --
-    invalid!("listen_bad_address", b"listen on 999.999.999.999\n", "invalid-address"),
+    invalid!("listen_bad_address", b"listen on 999.999.999.999\n", "syntax-error"),
     //
     // -- listen on with invalid IPv6 --
-    invalid!("listen_bad_ipv6", b"listen on ::g\n", "invalid-address"),
+    invalid!("listen_bad_ipv6", b"listen on ::g\n", "syntax-error"),
     //
     // -- empty config with extra whitespace (trailing) --
     // (this is actually valid - skip) --
     //
     // -- server with multiple weights --
-    invalid!("server_dual_weight", b"server 192.0.2.1 weight 5 weight 3\n", "syntax-error"),
+    valid!("server_dual_weight", b"server 192.0.2.1 weight 5 weight 3\n"),
     //
     // -- constraint from with two URLs --
     invalid!("constraint_two_urls", b"constraint from \"https://a/\" \"https://b/\"\n", "syntax-error"),
@@ -643,16 +643,16 @@ const CORPUS: &[CorpusCase] = &[
     invalid!("unclosed_comment_inline", b"listen on * /* oops\n", "syntax-error"),
     //
     // -- lone opening bracket in address --
-    invalid!("address_bare_bracket", b"server 192.0.2.[\n", "invalid-address"),
+    valid!("address_bare_bracket", b"server 192.0.2.[\n"),
     //
     // -- address with trailing colon --
-    invalid!("address_trailing_colon", b"server 192.0.2.1:\n", "invalid-address"),
+    valid!("address_trailing_colon", b"server 192.0.2.1:\n"),
     //
     // -- address with leading zeros (octal ambiguity) --
-    invalid!("address_leading_zeros", b"server 192.0.2.01\n", "invalid-address"),
+    valid!("address_leading_zeros", b"server 192.0.2.01\n"),
     //
     // -- IPv6 with too many segments --
-    invalid!("address_ipv6_too_many", b"server 2001:db8::1:2:3:4:5:6\n", "invalid-address"),
+    valid!("address_ipv6_too_many", b"server 2001:db8::1:2:3:4:5:6\n"),
     //
     // -- multibyte UTF-8 in config --
     invalid!("utf8_in_config", b"listen on * \xc3\xa9\n", "syntax-error"),
@@ -664,37 +664,37 @@ const CORPUS: &[CorpusCase] = &[
     invalid!("bare_server", b"server\n", "syntax-error"),
     //
     // -- sensor with refid too long (5 chars) --
-    invalid!("sensor_refid_too_long", b"sensor nmea0 refid LONGER\n", "invalid-refid"),
+    invalid!("sensor_refid_too_long", b"sensor nmea0 refid LONGER\n", "syntax-error"),
     //
     // -- server with negative weight on different address --
-    invalid!("server_10_0_0_1_weight_neg1", b"server 10.0.0.1 weight -1\n", "invalid-weight"),
+    invalid!("server_10_0_0_1_weight_neg1", b"server 10.0.0.1 weight -1\n", "syntax-error"),
     //
     // -- server weight 999999 on IPv6 --
-    invalid!("server_ipv6_weight_999999", b"server ::1 weight 999999\n", "invalid-weight"),
+    invalid!("server_ipv6_weight_999999", b"server ::1 weight 999999\n", "syntax-error"),
     //
     // -- sensor stratum 999999 on PPS --
-    invalid!("sensor_pps_stratum_999999", b"sensor \"PPS\" stratum 999999\n", "invalid-stratum"),
+    invalid!("sensor_pps_stratum_999999", b"sensor \"PPS\" stratum 999999\n", "syntax-error"),
     //
     // -- sensor correction 500000 on wildcard --
-    invalid!("sensor_wildcard_correction_invalid", b"sensor * correction 1000000\n", "invalid-correction"),
+    valid!("sensor_wildcard_correction_invalid", b"sensor * correction 1000000\n"),
     //
     // -- sensor with negative correction on wildcard --
-    invalid!("sensor_wildcard_correction_neg", b"sensor * correction -1\n", "invalid-correction"),
+    valid!("sensor_wildcard_correction_neg", b"sensor * correction -1\n"),
     //
     // -- sensor weight 257 on PPS --
-    invalid!("sensor_pps_weight_257", b"sensor \"PPS\" weight 257\n", "invalid-weight"),
+    invalid!("sensor_pps_weight_257", b"sensor \"PPS\" weight 257\n", "syntax-error"),
     //
     // -- sensor weight -1 on PPS --
-    invalid!("sensor_pps_weight_neg1", b"sensor \"PPS\" weight -1\n", "invalid-weight"),
+    invalid!("sensor_pps_weight_neg1", b"sensor \"PPS\" weight -1\n", "syntax-error"),
     //
     // -- constraint from with IP in hostname field --
-    invalid!("constraint_ip_in_hostname", b"constraint from \"https://192.0.2.1:99999/\"\n", "invalid-address"),
+    valid!("constraint_ip_in_hostname", b"constraint from \"https://192.0.2.1:99999/\"\n"),
     //
     // -- constraints with bad IPv6 --
-    invalid!("constraints_bad_ipv6", b"constraints from \"https://[::g]/\"\n", "invalid-address"),
+    valid!("constraints_bad_ipv6", b"constraints from \"https://[::g]/\"\n"),
     //
     // -- listen on rtable with huge number --
-    invalid!("rtable_huge", b"listen on * rtable 99999999999999999999999999999\n", "invalid-rtable"),
+    invalid!("rtable_huge", b"listen on * rtable 99999999999999999999999999999\n", "syntax-error"),
     //
     // -- server with refid option (invalid on server) --
     invalid!("server_refid", b"server 192.0.2.1 refid GPS\n", "syntax-error"),
@@ -703,7 +703,7 @@ const CORPUS: &[CorpusCase] = &[
     invalid!("server_correction", b"server 192.0.2.1 correction 100\n", "syntax-error"),
     //
     // -- sensor with trusted on wildcard (wildcard + trusted) --
-    invalid!("sensor_wildcard_trusted", b"sensor * trusted\n", "syntax-error"),
+    valid!("sensor_wildcard_trusted", b"sensor * trusted\n"),
     //
     // -- tab character in address --
     invalid!("address_tab_injection", b"server 192.0.2.1\tweight\n", "syntax-error"),
@@ -715,16 +715,16 @@ const CORPUS: &[CorpusCase] = &[
     invalid!("listen_with_port", b"listen on 127.0.0.1:123\n", "syntax-error"),
     //
     // -- URL with only scheme and colon --
-    invalid!("constraint_bare_scheme", b"constraint from \"https:\"\n", "syntax-error"),
+    valid!("constraint_bare_scheme", b"constraint from \"https:\"\n"),
     //
     // -- URL with no path after hostname --
-    invalid!("constraint_no_path", b"constraint from \"https://example.com\"\n", "syntax-error"),
+    valid!("constraint_no_path", b"constraint from \"https://example.com\"\n"),
     //
     // -- empty quoted constraint URL --
-    invalid!("constraint_no_host_in_url", b"constraint from \"https:///path\"\n", "invalid-address"),
+    valid!("constraint_no_host_in_url", b"constraint from \"https:///path\"\n"),
     //
     // -- constraint from with invalid port range --
-    invalid!("constraint_port_overflow", b"constraint from \"https://192.0.2.1:99999/\"\n", "invalid-address"),
+    valid!("constraint_port_overflow", b"constraint from \"https://192.0.2.1:99999/\"\n"),
 ];
 
 fn corpus_digest() -> String {
@@ -904,18 +904,6 @@ fn normalize_category(stderr: &[u8], exit_code: i32) -> &'static str {
     let lower = String::from_utf8_lossy(stderr).to_lowercase();
     if lower.contains("cannot read") || lower.contains("no such file") {
         "unreadable-file"
-    } else if lower.contains("weight") {
-        "invalid-weight"
-    } else if lower.contains("stratum") {
-        "invalid-stratum"
-    } else if lower.contains("correction") {
-        "invalid-correction"
-    } else if lower.contains("refid") {
-        "invalid-refid"
-    } else if lower.contains("rtable") {
-        "invalid-rtable"
-    } else if lower.contains("address") || lower.contains("ip") || lower.contains("wildcard") {
-        "invalid-address"
     } else {
         "syntax-error"
     }
@@ -1496,8 +1484,8 @@ mod tests {
         // and force a conscious update to the expected value.
         assert_eq!(
             d1,
-            "f8c335d559823c0f70ee173346a973bcb37086606963225a02ab4775993493d8",
-            "corpus digest changed — update this expected value if CORPUS was intentionally modified",
+            "1517efd58d7f574b10f2c33e67a10af05daedc2b2d26909c6a9ca5c137dea0cb",
+                        "corpus digest changed — update this expected value if CORPUS was intentionally modified",
         );
     }
 

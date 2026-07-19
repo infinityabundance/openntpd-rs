@@ -1,0 +1,4 @@
+/home/one/openntpd-rs/target/parity/debug/ntpd: OpenNTPD-rs (forensic reconstruction)
+/home/one/openntpd-rs/target/parity/debug/ntpd: 0:5: unexpected string 'bogus' at start of directive
+6:10: unexpected string 'then' at start of directive
+

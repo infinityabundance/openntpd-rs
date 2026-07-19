@@ -1,0 +1,3 @@
+/home/one/openntpd-rs/target/parity/debug/ntpd: OpenNTPD-rs (forensic reconstruction)
+/home/one/openntpd-rs/target/parity/debug/ntpd: 19:26: invalid refid 'INVALID' (must be 1..=4 non-NUL bytes)
+

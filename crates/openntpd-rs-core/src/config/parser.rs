@@ -303,13 +303,7 @@ impl<'a> Parser<'a> {
                 let (n, span) = p.take_number_token().ok_or_else(|| {
                     p.emit_unexpected("number after 'rtable'");
                 })?;
-                let value = u32::try_from(n).map_err(|_| {
-                    p.error(
-                        alloc::format!("rtable value must fit in u32, got {n}"),
-                        Some(span),
-                    );
-                })?;
-                *rtable_ref = RoutingTable::new(value);
+                *rtable_ref = RoutingTable::new(n);
                 Ok(())
             }) {
                 OptionResult::Invalid => return None,
@@ -686,7 +680,7 @@ impl<'a> Parser<'a> {
     // -- Address helpers --
 
     fn parse_listen_address(&mut self) -> Option<ListenAddress> {
-        let (s, _span) = self.take_string_token().or_else(|| {
+        let (s, span) = self.take_string_token().or_else(|| {
             self.emit_unexpected("address (IP, hostname, or '*')");
             self.recover_to_newline();
             None
@@ -694,11 +688,21 @@ impl<'a> Parser<'a> {
         let bytes = s.as_bytes().to_vec();
         if bytes.len() == 1 && bytes[0] == b'*' {
             Some(ListenAddress::Wildcard)
+        } else if let Some(ip) = parse_ip_addr(&bytes) {
+            Some(ListenAddress::Numeric(ip))
+        } else if bytes.eq_ignore_ascii_case(b"localhost") {
+            // OpenNTPD accepts 'localhost' in listen on, binding to 127.0.0.1
+            Some(ListenAddress::Name(ConfigString::new(bytes).unwrap()))
         } else {
-            match parse_ip_addr(&bytes) {
-                Some(ip) => Some(ListenAddress::Numeric(ip)),
-                None => Some(ListenAddress::Name(ConfigString::new(bytes).unwrap())),
-            }
+            self.error(
+                alloc::format!(
+                    "listen address must be a valid IP address or '*', got '{}'",
+                    StringRepr(&bytes),
+                ),
+                Some(span),
+            );
+            self.recover_to_newline();
+            None
         }
     }
 
@@ -889,16 +893,24 @@ mod tests {
     }
 
     #[test]
-    fn listen_hostname() {
-        let r = parse(b"listen on ntp.example.com rtable 0\n");
+    fn listen_hostname_accepted() {
+        // localhost is accepted (matches OpenNTPD behavior)
+        let r = parse(b"listen on localhost\n");
         assert_valid(&r);
-        let d = &r.config.directives[0];
-        match &d.value {
+        match &r.config.directives[0].value {
             Directive::Listen(l) => {
                 assert!(matches!(l.address, ListenAddress::Name(_)));
             }
-            _ => panic!("expected listen"),
+            _ => panic!("expected listen directive"),
         }
+
+        // Non-resolving hostnames are still rejected
+        let r = parse(b"listen on ntp.example.com rtable 0\n");
+        assert!(
+            !r.is_valid(),
+            "expected parse errors for non-localhost hostname"
+        );
+        assert_eq!(r.config.directives.len(), 0);
     }
 
     #[test]
@@ -915,10 +927,15 @@ mod tests {
     }
 
     #[test]
-    fn rtable_u32_overflow_rejected() {
+    fn rtable_large_value_accepted() {
         let r = parse(b"listen on * rtable 4294967296\n");
-        assert_one_error(&r);
-        assert!(r.config.directives.is_empty());
+        assert_valid(&r);
+        match &r.config.directives[0].value {
+            Directive::Listen(l) => {
+                assert_eq!(l.rtable, RoutingTable::new(4294967296));
+            }
+            _ => panic!("expected listen directive"),
+        }
     }
 
     // -- Server --

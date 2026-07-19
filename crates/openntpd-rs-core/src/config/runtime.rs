@@ -29,7 +29,7 @@ pub struct RuntimeConfig {
 #[derive(Debug, Clone)]
 pub struct ListenConfig {
     pub address: SocketAddr,
-    pub rtable: u32,
+    pub rtable: i64,
 }
 
 /// A configured NTP server peer.
