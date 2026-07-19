@@ -7,7 +7,8 @@
 //! - `logical_get()` — consumes backslash-newline as continuation globally,
 //!   drops a backslash before any non-newline byte and returns that byte
 //!   immediately (it is NOT re-processed).
-//! - `logical_unget(b)` — one-byte pushback, so peek via get+unget is safe.
+//! - `logical_unget(b)` — one-byte pushback storing the byte's raw end
+//!   position, so spans remain delimiter-accurate after pushback.
 //!
 //! All non-quoted consumption (dispatch, whitespace, comments, recovery,
 //! numbers, unquoted strings) goes through `logical_get()`.
@@ -21,10 +22,15 @@
 //! - NUL rejected everywhere (in comments this is intentional hardening —
 //!   upstream does not special-case NUL in comments).
 //! - Digits followed by non-number-terminator → fall back to string.
+//!   A leading `-` is split: the minus becomes a Symbol token and the
+//!   digit sequence becomes the next (string) token, matching `parse.y`.
 //! - String-start characters: alphanumeric, `:`, `_`, `*`.
 //! - Backslash-newline consumed globally before token classification.
 //! - Raw newline inside quoted string: line incremented, byte NOT added
 //!   to result.
+//! - Quoted escape rules: `\` before the active quote, space, or tab
+//!   includes only the target; `\` before any other byte includes both
+//!   the backslash and the target (no pushback, no re-processing).
 //! - Token limits: 8094 (quoted), 8095 (unquoted/numeric, including sign).
 
 use alloc::vec::Vec;
@@ -187,7 +193,7 @@ struct CursorState {
     offset: usize,
     line: usize,
     line_start: usize,
-    pushback: Option<u8>,
+    pushback: Option<(u8, usize)>,
 }
 
 // ---------------------------------------------------------------------------
@@ -200,9 +206,9 @@ pub struct Lexer<'a> {
     line: usize,
     line_start: usize,
     recovering: bool,
-    /// One-byte pushback for the logical cursor.  Set by `logical_unget()`;
-    /// consumed first by the next `logical_get()`.
-    logical_pushback: Option<u8>,
+    /// Pushback carries the byte and the raw end position at the time
+    /// `logical_unget()` was called, so token spans remain accurate.
+    logical_pushback: Option<(u8, usize)>,
 }
 
 impl<'a> Lexer<'a> {
@@ -252,11 +258,10 @@ impl<'a> Lexer<'a> {
     // * Backslash-newline → consumed as continuation (line incremented).
     // * Backslash + non-newline → first backslash dropped, the following
     //   byte returned immediately (NOT re-processed).
-    // * One-byte pushback via `logical_unget()` / `logical_pushback` field.
-    // * All non-quoted paths go through this primitive.
+    // * Pushback carries raw_end so spans are accurate after unget.
 
     fn logical_get(&mut self) -> Option<u8> {
-        if let Some(b) = self.logical_pushback.take() {
+        if let Some((b, _)) = self.logical_pushback.take() {
             return Some(b);
         }
         loop {
@@ -291,14 +296,17 @@ impl<'a> Lexer<'a> {
     }
 
     fn logical_unget(&mut self, b: u8) {
-        self.logical_pushback = Some(b);
+        // Store the raw offset at the time of pushback (the position past
+        // the byte just consumed) so the caller can compute an accurate
+        // token end: `self.offset` before unget is `end_of_byte`.
+        self.logical_pushback = Some((b, self.offset));
     }
 
     /// Truly side-effect-free peek.  Uses cursor save/restore so that the
     /// raw offset and pushback are both unchanged — important because the
     /// raw cursor (`bump_raw`) does not see `logical_pushback`.
     fn logical_peek(&mut self) -> Option<u8> {
-        if let Some(b) = self.logical_pushback {
+        if let Some((b, _)) = self.logical_pushback {
             return Some(b);
         }
         let saved = self.save_cursor();
@@ -317,9 +325,6 @@ impl<'a> Lexer<'a> {
 
     fn skip_whitespace(&mut self) {
         loop {
-            // Consume spaces and tabs using logical peek/get so that
-            // bytes in pushback (e.g. a space put back by a number scanner)
-            // are correctly consumed.
             loop {
                 match self.logical_peek() {
                     Some(b' ') | Some(b'\t') => {
@@ -328,9 +333,6 @@ impl<'a> Lexer<'a> {
                     _ => break,
                 }
             }
-            // After whitespace, check for continuation.  Pushback is None
-            // here because any whitespace bytes in pushback were consumed
-            // by the inner loop.
             let saved = self.save_cursor();
             match self.peek_raw() {
                 Some(b'\\') => {
@@ -340,8 +342,6 @@ impl<'a> Lexer<'a> {
                             self.offset += 1;
                             self.line += 1;
                             self.line_start = self.offset;
-                            // Continuation — loop back to skip spaces on
-                            // the next physical line.
                             continue;
                         }
                         _ => {
@@ -358,15 +358,19 @@ impl<'a> Lexer<'a> {
         }
     }
 
-    // -- Error recovery (uses logical cursor so escaped newlines are skipped) --
+    // -- Error recovery --
+    //
+    // Uses the logical cursor so escaped newlines are skipped as
+    // continuations.  The terminating newline is consumed and the
+    // line counter is advanced.
 
     fn recover_to_newline(&mut self) {
         loop {
             match self.logical_get() {
                 None => break,
                 Some(b'\n') => {
-                    // Consume the newline (do NOT put it back) — the next
-                    // token starts on the next physical line.
+                    self.line += 1;
+                    self.line_start = self.offset;
                     break;
                 }
                 _ => continue,
@@ -374,36 +378,41 @@ impl<'a> Lexer<'a> {
         }
     }
 
+    /// For a byte obtained via `logical_peek()`, compute its source start.
+    /// If the byte came from pushback, its raw position is `raw_end - 1`;
+    /// otherwise the byte is at `self.offset`.
+    fn peek_source_start(&self, default_start: usize) -> usize {
+        self.logical_pushback
+            .map(|(_, end)| end.saturating_sub(1))
+            .unwrap_or(default_start)
+    }
+
     // -- Main lex entry point --
 
     pub fn next_token(&mut self) -> Token {
-        // Error recovery
         if self.recovering {
             self.recover_to_newline();
             self.recovering = false;
         }
 
-        // Skip whitespace (handles leading continuations internally)
         self.skip_whitespace();
 
-        let start = self.offset;
+        let raw_start = self.offset;
         let current_line = self.line;
 
-        // Peek at the first logical byte.
         let b = match self.logical_peek() {
-            None => return self.make_token(TokenKind::Eof, start, current_line),
+            None => return self.make_token(TokenKind::Eof, raw_start, raw_start, current_line),
             Some(b) => b,
         };
 
-        // Newline
         if b == b'\n' {
-            self.logical_get(); // consume
+            let start = self.peek_source_start(raw_start);
+            self.logical_get();
             self.line += 1;
             self.line_start = self.offset;
-            return self.make_token(TokenKind::Newline, start, current_line);
+            return self.make_token(TokenKind::Newline, start, self.offset, current_line);
         }
 
-        // Comment — use logical_get() for continuation handling.
         if b == b'#' {
             loop {
                 match self.logical_get() {
@@ -414,64 +423,82 @@ impl<'a> Lexer<'a> {
                     }
                     Some(b'\0') => {
                         self.recovering = true;
-                        return self.error_token(LexErrorKind::EmbeddedNul, start, current_line);
+                        return self.error_token(
+                            LexErrorKind::EmbeddedNul,
+                            raw_start,
+                            self.offset,
+                            current_line,
+                        );
                     }
                     _ => continue,
                 }
             }
         }
 
-        // NUL error
         if b == b'\0' {
-            self.logical_get(); // consume
+            self.logical_get();
             self.recovering = true;
-            return self.error_token(LexErrorKind::EmbeddedNul, start, current_line);
+            return self.error_token(
+                LexErrorKind::EmbeddedNul,
+                raw_start,
+                self.offset,
+                current_line,
+            );
         }
 
-        // Quoted string
         if b == b'"' || b == b'\'' {
-            return self.lex_quoted(start, current_line);
+            return self.lex_quoted(raw_start, current_line);
         }
 
-        // Number or minus
         if b == b'-' || b.is_ascii_digit() {
-            return self.lex_number_or_string(start, current_line);
+            return self.lex_number_or_string(raw_start, current_line);
         }
 
-        // String-start characters
         if is_string_start(b) {
-            return self.lex_unquoted(start, current_line);
+            return self.lex_unquoted(raw_start, current_line);
         }
 
-        // Punctuation symbol
         if b.is_ascii_punctuation() {
-            self.logical_get(); // consume
-            return self.make_token(TokenKind::Symbol(b), start, current_line);
+            let start = self.peek_source_start(raw_start);
+            self.logical_get();
+            return self.make_token(TokenKind::Symbol(b), start, self.offset, current_line);
         }
 
-        // Fallback: attempt unquoted
-        self.lex_unquoted(start, current_line)
+        // Unrecognized byte — return as symbol (matching upstream).
+        let start = self.peek_source_start(raw_start);
+        self.logical_get();
+        self.make_token(TokenKind::Symbol(b), start, self.offset, current_line)
     }
 
     // -----------------------------------------------------------------------
     // Number-or-string
     // -----------------------------------------------------------------------
+    //
+    // Positive digit prefix (e.g. `123abc`) falls back to a single
+    // unquoted string token: String("123abc").
+    //
+    // Negative digit prefix (e.g. `-123abc`) splits into a minus Symbol
+    // followed by a (non-number) String: Symbol('-'), String("123abc").
 
     fn lex_number_or_string(&mut self, start: usize, line: usize) -> Token {
         let saved = self.save_cursor();
         let first = self.logical_get();
-
         let start_negative = first == Some(b'-');
 
-        // If the first byte wasn't '-' or a digit, restore and lex as unquoted.
         if !start_negative && !first.map_or(false, |b| b.is_ascii_digit()) {
             self.restore_cursor(saved);
             return self.lex_unquoted(start, line);
         }
 
-        // Scan digits using the logical cursor so that backslash-newline
-        // continuation is consumed (matching lgetc(0)).
+        // Save state after the potential minus (for negative fallback).
+        let after_minus = if start_negative {
+            Some(self.save_cursor())
+        } else {
+            None
+        };
+
         let mut digits = Vec::new();
+        let mut end = self.offset;
         if let Some(b) = first {
             if b.is_ascii_digit() {
                 digits.push(b);
@@ -482,12 +509,16 @@ impl<'a> Lexer<'a> {
             match self.logical_get() {
                 Some(b) if b.is_ascii_digit() => {
                     digits.push(b);
-                    // Length check includes the sign byte (upstream writes
-                    // the sign into the same 8096-byte buffer).
+                    end = self.offset;
                     let token_len = digits.len() + usize::from(start_negative);
                     if token_len > MAX_UNQUOTED_LENGTH {
                         self.recovering = true;
-                        return self.error_token(LexErrorKind::TokenTooLong, start, line);
+                        return self.error_token(
+                            LexErrorKind::TokenTooLong,
+                            start,
+                            self.offset,
+                            line,
+                        );
                     }
                 }
                 Some(c) => {
@@ -500,22 +531,32 @@ impl<'a> Lexer<'a> {
 
         // Lone '-' with no following digits → symbol.
         if digits.is_empty() && start_negative {
-            return self.make_token(TokenKind::Symbol(b'-'), start, line);
+            if let Some(am) = after_minus {
+                self.restore_cursor(am);
+            }
+            return self.make_token(TokenKind::Symbol(b'-'), start, end, line);
         }
 
         let terminator = self.logical_peek();
 
         if digits.is_empty() || !terminator.map_or(true, is_number_terminator) {
-            // Not a valid number context — restore cursor and re-lex as unquoted.
+            if start_negative {
+                // Negative fallback: return '-' as symbol; remaining
+                // digits become the next token (string).
+                if let Some(am) = after_minus {
+                    self.restore_cursor(am);
+                }
+                return self.make_token(TokenKind::Symbol(b'-'), start, end, line);
+            }
             self.restore_cursor(saved);
             return self.lex_unquoted(start, line);
         }
 
         match parse_i64_from_bytes(&digits, start_negative) {
-            Some(n) => self.make_token(TokenKind::Number(n), start, line),
+            Some(n) => self.make_token(TokenKind::Number(n), start, end, line),
             None => {
                 self.recovering = true;
-                self.error_token(LexErrorKind::NumberOverflow, start, line)
+                self.error_token(LexErrorKind::NumberOverflow, start, self.offset, line)
             }
         }
     }
@@ -525,24 +566,32 @@ impl<'a> Lexer<'a> {
     // -----------------------------------------------------------------------
 
     fn lex_quoted(&mut self, start: usize, line: usize) -> Token {
-        // Consume the opening quote.  It may be in logical_pushback (left by
-        // skip_whitespace or logical_peek) rather than at the raw offset.
+        // Consume the opening delimiter through the logical cursor so
+        // that a logically-escaped quote (backslash + quote) is handled
+        // correctly: the backslash is dropped by logical_get, and the
+        // quote starts the quoted string.
         let quote = self
-            .logical_pushback
-            .take()
-            .or_else(|| self.bump_raw())
+            .logical_get()
             .expect("lex_quoted called without an opening quote");
+
+        debug_assert!(matches!(quote, b'\'' | b'"'));
+
         let mut bytes = Vec::new();
 
         loop {
             match self.bump_raw() {
                 None => {
                     self.recovering = true;
-                    return self.error_token(LexErrorKind::UnterminatedQuote, start, line);
+                    return self.error_token(
+                        LexErrorKind::UnterminatedQuote,
+                        start,
+                        self.offset,
+                        line,
+                    );
                 }
                 Some(b'\0') => {
                     self.recovering = true;
-                    return self.error_token(LexErrorKind::EmbeddedNul, start, line);
+                    return self.error_token(LexErrorKind::EmbeddedNul, start, self.offset, line);
                 }
                 Some(b'\n') => {
                     self.line += 1;
@@ -557,34 +606,54 @@ impl<'a> Lexer<'a> {
                         }
                         Some(b'\0') => {
                             self.recovering = true;
-                            return self.error_token(LexErrorKind::EmbeddedNul, start, line);
+                            return self.error_token(
+                                LexErrorKind::EmbeddedNul,
+                                start,
+                                self.offset,
+                                line,
+                            );
                         }
-                        Some(c) if c == quote || c == b'\\' || c == b' ' || c == b'\t' => {
+                        // Known escapes: active quote, space, tab.
+                        // Only the target byte is included.
+                        Some(c) if c == quote || c == b' ' || c == b'\t' => {
                             bytes.push(c);
                         }
-                        // Unknown escape: append the backslash and un-read the
-                        // next byte so it is re-processed normally (matching
-                        // OpenNTPD's lgetc-based approach where the second
-                        // byte is pushed back).
-                        Some(_) => {
+                        // Unknown escape: include both the backslash and
+                        // the following byte (both consumed, no pushback).
+                        Some(c) => {
                             bytes.push(b'\\');
-                            self.offset = self.offset.saturating_sub(1);
+                            bytes.push(c);
                         }
                         None => {
                             self.recovering = true;
-                            return self.error_token(LexErrorKind::UnterminatedQuote, start, line);
+                            return self.error_token(
+                                LexErrorKind::UnterminatedQuote,
+                                start,
+                                self.offset,
+                                line,
+                            );
                         }
                     }
                     if bytes.len() > MAX_QUOTED_LENGTH {
                         self.recovering = true;
-                        return self.error_token(LexErrorKind::TokenTooLong, start, line);
+                        return self.error_token(
+                            LexErrorKind::TokenTooLong,
+                            start,
+                            self.offset,
+                            line,
+                        );
                     }
                 }
                 Some(c) => {
                     bytes.push(c);
                     if bytes.len() > MAX_QUOTED_LENGTH {
                         self.recovering = true;
-                        return self.error_token(LexErrorKind::TokenTooLong, start, line);
+                        return self.error_token(
+                            LexErrorKind::TokenTooLong,
+                            start,
+                            self.offset,
+                            line,
+                        );
                     }
                 }
             }
@@ -592,7 +661,7 @@ impl<'a> Lexer<'a> {
 
         let config_str = ConfigString::new(bytes)
             .expect("quoted string contains NUL (should have been rejected above)");
-        self.make_token(TokenKind::String(config_str), start, line)
+        self.make_token(TokenKind::String(config_str), start, self.offset, line)
     }
 
     // -----------------------------------------------------------------------
@@ -601,6 +670,7 @@ impl<'a> Lexer<'a> {
 
     fn lex_unquoted(&mut self, start: usize, line: usize) -> Token {
         let mut bytes = Vec::new();
+        let mut end = start;
 
         loop {
             match self.logical_get() {
@@ -614,9 +684,6 @@ impl<'a> Lexer<'a> {
                     break;
                 }
                 Some(b'\0') => {
-                    // Push back NUL so the dispatcher emits the error as
-                    // a separate token.  Bytes accumulated before NUL are
-                    // returned as a string token.
                     self.logical_unget(b'\0');
                     break;
                 }
@@ -626,9 +693,10 @@ impl<'a> Lexer<'a> {
                 }
                 Some(c) => {
                     bytes.push(c);
+                    end = self.offset;
                     if bytes.len() > MAX_UNQUOTED_LENGTH {
                         self.recovering = true;
-                        return self.error_token(LexErrorKind::TokenTooLong, start, line);
+                        return self.error_token(LexErrorKind::TokenTooLong, start, end, line);
                     }
                 }
             }
@@ -636,30 +704,30 @@ impl<'a> Lexer<'a> {
 
         if bytes.is_empty() {
             self.recovering = true;
-            return self.error_token(LexErrorKind::InvalidNumber, start, line);
+            return self.error_token(LexErrorKind::InvalidNumber, start, end, line);
         }
 
         if let Some(kw) = Keyword::try_match(&bytes) {
-            return self.make_token(TokenKind::Keyword(kw), start, line);
+            return self.make_token(TokenKind::Keyword(kw), start, end, line);
         }
 
         let config_str = ConfigString::new(bytes)
             .expect("unquoted string contains NUL (should have been rejected above)");
-        self.make_token(TokenKind::String(config_str), start, line)
+        self.make_token(TokenKind::String(config_str), start, end, line)
     }
 
-    fn make_token(&self, kind: TokenKind, start: usize, line: usize) -> Token {
+    fn make_token(&self, kind: TokenKind, start: usize, end: usize, line: usize) -> Token {
         Token {
             kind,
-            span: SourceSpan::new(start, self.offset),
+            span: SourceSpan::new(start, end),
             line,
         }
     }
 
-    fn error_token(&self, kind: LexErrorKind, start: usize, line: usize) -> Token {
+    fn error_token(&self, kind: LexErrorKind, start: usize, end: usize, line: usize) -> Token {
         Token {
             kind: TokenKind::Error(kind),
-            span: SourceSpan::new(start, self.offset),
+            span: SourceSpan::new(start, end),
             line,
         }
     }
@@ -747,6 +815,12 @@ mod tests {
         assert_eq!(l.logical_get(), Some(b'a'));
         assert_eq!(l.logical_get(), Some(b'b'));
         assert_eq!(l.logical_get(), None);
+    }
+    #[test]
+    fn cursor_peek_after_continuation() {
+        let mut l = Lexer::new(b"\\\nx");
+        assert_eq!(l.logical_peek(), Some(b'x'));
+        assert_eq!(l.logical_peek(), Some(b'x')); // idempotent
     }
 
     // -- Comments --
@@ -849,6 +923,15 @@ mod tests {
         assert_eq!(kinds(b"12\\\n3\n"), &["num", "nl"]);
         let mut l = Lexer::new(b"12\\\n3");
         assert_eq!(l.next_token().kind, TokenKind::Number(123));
+    }
+    #[test]
+    fn negative_number_after_minus_fallback() {
+        // -123abc -> Symbol('-'), String("123abc")
+        assert_eq!(kinds(b"-123abc"), &["sym", "str"]);
+    }
+    #[test]
+    fn negative_number_after_minus_dotted() {
+        assert_eq!(kinds(b"-1.2.3"), &["sym", "str"]);
     }
 
     // -- Number fallback to string --
@@ -953,7 +1036,6 @@ mod tests {
     }
     #[test]
     fn unterminated_quote_newline() {
-        // Raw newline inside quote is consumed (line increments, no token).
         assert_eq!(kinds(b"\"hello\n"), &["err"]);
     }
     #[test]
@@ -979,18 +1061,10 @@ mod tests {
     }
     #[test]
     fn quoted_unknown_escape() {
+        // \x is unknown: both \ and x are included.
         assert_eq!(
             Lexer::new(b"\"hello\\x\"").next_token().kind,
             TokenKind::String(ConfigString::new(b"hello\\x".to_vec()).unwrap())
-        );
-    }
-    #[test]
-    fn quoted_consecutive_backslashes() {
-        // "\\" -> one backslash (\\ is a known escape -> single \\)
-        let mut l = Lexer::new(b"\"\\\\\"");
-        assert_eq!(
-            l.next_token().kind,
-            TokenKind::String(ConfigString::new(b"\\".to_vec()).unwrap())
         );
     }
     #[test]
@@ -1014,6 +1088,40 @@ mod tests {
             _ => panic!(),
         }
     }
+    #[test]
+    fn backslash_before_double_quote_opens_quote() {
+        // \ + " -> logical_get sees " (backslash dropped), starts quoted.
+        assert_eq!(kinds(b"\\\"pool.ntp.org\"\n"), &["str", "nl"]);
+        let mut l = Lexer::new(b"\\\"pool.ntp.org\"");
+        if let TokenKind::String(s) = &l.next_token().kind {
+            assert_eq!(s.as_bytes(), b"pool.ntp.org");
+        } else {
+            panic!("expected string token");
+        }
+    }
+    #[test]
+    fn backslash_before_single_quote_opens_quote() {
+        assert_eq!(kinds(b"\\'pool.ntp.org'\n"), &["str", "nl"]);
+    }
+    #[test]
+    fn quoted_escaped_unknown_escape_preserves_both() {
+        // \x is unknown: both backslash and x appear in output.
+        let mut l = Lexer::new(b"\"\\x\"");
+        assert_eq!(
+            l.next_token().kind,
+            TokenKind::String(ConfigString::new(b"\\x".to_vec()).unwrap())
+        );
+    }
+    #[test]
+    fn quoted_double_backslash_produces_two() {
+        // Two backslashes in sequence: each is an unknown escape,
+        // both \ chars appear in the output.
+        let mut l = Lexer::new(b"\"\\\\\"");
+        assert_eq!(
+            l.next_token().kind,
+            TokenKind::String(ConfigString::new(b"\\\\".to_vec()).unwrap())
+        );
+    }
 
     // -- Backslash-newline continuation --
     #[test]
@@ -1036,7 +1144,6 @@ mod tests {
     // -- NUL rejection --
     #[test]
     fn nul_unquoted() {
-        // Bytes before NUL returned as string, then NUL error.
         assert_eq!(kinds(b"foo\0bar"), &["str", "err"]);
     }
     #[test]
@@ -1045,7 +1152,6 @@ mod tests {
     }
     #[test]
     fn nul_comment() {
-        // NUL in comment triggers error; recovery consumes the newline.
         assert_eq!(kinds(b"# foo\0bar\n"), &["err"]);
     }
 
@@ -1058,16 +1164,25 @@ mod tests {
         assert_eq!(toks[2].line, 2);
         assert_eq!(toks[3].line, 2);
     }
+    #[test]
+    fn recovery_advances_to_next_line() {
+        let mut lexer = Lexer::new(b"999999999999999999999999\nserver pool.ntp.org\n");
+        assert!(matches!(
+            lexer.next_token().kind,
+            TokenKind::Error(LexErrorKind::NumberOverflow)
+        ));
+        let server = lexer.next_token();
+        assert_eq!(server.line, 2);
+        assert_eq!(server.kind, TokenKind::Keyword(Keyword::Server));
+    }
 
     // -- Error recovery --
     #[test]
     fn recovery_after_nul() {
-        // NUL error, recovery skips to next newline, then baz.
         assert_eq!(kinds(b"foo\0bar\nbaz\n"), &["str", "err", "str", "nl"]);
     }
     #[test]
     fn recovery_after_overflow() {
-        // Overflow error, recovery consumes the newline, then baz.
         assert_eq!(
             kinds(b"999999999999999999999999999999\nbaz\n"),
             &["err", "str", "nl"]
@@ -1075,7 +1190,6 @@ mod tests {
     }
     #[test]
     fn recovery_after_unterminated_quote() {
-        // Quote consumes everything including raw newlines -> error only.
         assert_eq!(kinds(b"\"foo\nbar\n"), &["err"]);
     }
 
@@ -1086,6 +1200,17 @@ mod tests {
             kinds(b"(){};,[]"),
             &["sym", "sym", "sym", "sym", "sym", "sym", "sym", "sym"]
         );
+    }
+
+    // -- Non-punctuation fallback as symbol --
+    #[test]
+    fn non_punctuation_as_symbol() {
+        // Vertical tab after a number: number + symbol(0x0B)
+        let input: Vec<u8> = b"123\x0B".to_vec();
+        let toks = lex_all(&input);
+        assert_eq!(toks.len(), 3); // includes Eof
+        assert!(matches!(toks[0].kind, TokenKind::Number(123)));
+        assert_eq!(toks[1].kind, TokenKind::Symbol(b'\x0B'));
     }
 
     // -- Unquoted character class --
@@ -1162,7 +1287,7 @@ mod tests {
         input.extend(core::iter::repeat(b'9').take(8094));
         input.push(b' ');
         let tok = Lexer::new(&input).next_token();
-        assert!(matches!(tok.kind, TokenKind::Error(_)));
+        assert!(matches!(tok.kind, TokenKind::Error(_))); // overflow, not TooLong
     }
     #[test]
     fn negative_number_8096_total_rejected() {
@@ -1182,7 +1307,7 @@ mod tests {
         input.extend(core::iter::repeat(b'9').take(8095));
         input.push(b' ');
         let tok = Lexer::new(&input).next_token();
-        assert!(matches!(tok.kind, TokenKind::Error(_)));
+        assert!(matches!(tok.kind, TokenKind::Error(_))); // overflow, not TooLong
     }
 
     // -- Number terminator variants --
@@ -1197,6 +1322,47 @@ mod tests {
         let input: Vec<u8> = b"123\x0C".to_vec();
         let tok = Lexer::new(&input).next_token();
         assert!(matches!(tok.kind, TokenKind::Number(123)));
+    }
+
+    // -- Span correctness --
+    #[test]
+    fn span_keyword_before_space() {
+        let mut l = Lexer::new(b"server ");
+        let tok = l.next_token();
+        assert_eq!(tok.span, SourceSpan::new(0, 6));
+        assert!(matches!(tok.kind, TokenKind::Keyword(Keyword::Server)));
+    }
+    #[test]
+    fn span_number_before_newline() {
+        let mut l = Lexer::new(b"123\n");
+        let tok = l.next_token();
+        assert_eq!(tok.span, SourceSpan::new(0, 3));
+        assert!(matches!(tok.kind, TokenKind::Number(123)));
+    }
+    #[test]
+    fn span_slash_between_strings() {
+        let toks = lex_all(b"foo/bar");
+        assert_eq!(toks[0].span, SourceSpan::new(0, 3));
+        assert!(matches!(toks[0].kind, TokenKind::String(_)));
+        assert_eq!(toks[1].span, SourceSpan::new(3, 4));
+        assert!(matches!(toks[1].kind, TokenKind::Symbol(b'/')));
+        assert_eq!(toks[2].span, SourceSpan::new(4, 7));
+        assert!(matches!(toks[2].kind, TokenKind::String(_)));
+    }
+    #[test]
+    fn span_newline_after_comment() {
+        let mut l = Lexer::new(b"# comment\n");
+        let tok = l.next_token();
+        assert_eq!(tok.kind, TokenKind::Newline);
+        // Comment starts at 0, newline byte is at position 9.
+        assert_eq!(tok.span, SourceSpan::new(9, 10));
+    }
+    #[test]
+    fn span_across_continuation() {
+        let mut l = Lexer::new(b"ser\\\nver");
+        let tok = l.next_token();
+        assert_eq!(tok.span, SourceSpan::new(0, 8));
+        assert!(matches!(tok.kind, TokenKind::Keyword(Keyword::Server)));
     }
 
     // -- Integration --
