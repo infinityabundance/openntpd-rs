@@ -245,6 +245,14 @@ fn sha256_digest(bytes: &[u8]) -> String {
 // Oracle manifest
 // ---------------------------------------------------------------------------
 
+/// Validate a 64-character hex SHA-256 digest.
+fn validate_sha256(value: &str, field: &str) -> anyhow::Result<()> {
+    if value.len() != 64 || !value.bytes().all(|b| b.is_ascii_hexdigit()) {
+        anyhow::bail!("{field} must be a 64-character hex SHA-256 digest, got {value:?}");
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 struct OracleManifest {
     implementation: String,
@@ -617,9 +625,26 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
                 .map_err(|e| anyhow::anyhow!("cannot read manifest {mpath:?}: {e}"))?;
             let m: OracleManifest = serde_json::from_str(&text)
                 .map_err(|e| anyhow::anyhow!("invalid manifest: {e}"))?;
-            // Verify manifest binary SHA-256 if present and not "pending"
+
+            // Reject placeholder values — enforce real SHA-256 digests
+            validate_sha256(&m.source_sha256, "manifest source_sha256")?;
+            validate_sha256(&m.build_recipe_sha256, "manifest build_recipe_sha256")?;
+            validate_sha256(&m.binary_sha256, "manifest binary_sha256")?;
+
+            // Verify the oracle is the claimed implementation
+            if m.implementation != "OpenNTPD" {
+                anyhow::bail!(
+                    "manifest implementation must be 'OpenNTPD', got {:?}",
+                    m.implementation,
+                );
+            }
+            if m.version != "7.9p1" {
+                anyhow::bail!("manifest version must be '7.9p1', got {:?}", m.version,);
+            }
+
+            // Verify binary SHA-256 matches actual oracle binary
             if let Some(ref o_sha) = oracle_sha {
-                if m.binary_sha256 != "pending" && m.binary_sha256 != *o_sha {
+                if !m.binary_sha256.eq_ignore_ascii_case(o_sha) {
                     anyhow::bail!(
                         "manifest binary SHA-256 mismatch:\n  manifest: {}\n  actual:   {o_sha}",
                         m.binary_sha256,
@@ -632,10 +657,12 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
         (None, _) => None,
     };
 
-    // ---- Create isolated run directory ----
+    // ---- Create isolated run directory and durable evidence directory ----
+    let ts = chrono_now();
     let run_dir = make_run_dir()?;
-    let stderr_dir = run_dir.join("stderr");
-    std::fs::create_dir_all(&stderr_dir)?;
+    let ts_path = ts.replace([' ', ':'], "_");
+    let evidence_dir = receipts_dir(mode).join(format!("stderr_{ts_path}"));
+    std::fs::create_dir_all(&evidence_dir)?;
 
     // ---- Print header ----
     println!(
@@ -715,7 +742,6 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
         CORPUS.len()
     );
 
-    let ts = chrono_now();
     let refs: Vec<(&CorpusCase, &CaseResult, Option<&CaseResult>)> = stderr_pairs
         .iter()
         .map(|(c, r, o)| (*c, r, o.as_ref()))
@@ -747,9 +773,9 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
         },
     };
 
-    write_receipt(&receipt, &stderr_dir, &refs)?;
+    write_receipt(&receipt, &evidence_dir, &refs)?;
 
-    // Clean up run directory
+    // Clean up only the temporary run directory, NOT evidence_dir
     let _ = std::fs::remove_dir_all(&run_dir);
 
     if failed > 0 {
@@ -869,8 +895,34 @@ mod tests {
         let d1 = corpus_digest();
         let d2 = corpus_digest();
         assert_eq!(d1, d2);
-        // Known value — document the current digest
-        assert_eq!(d1.len(), 64, "SHA-256 digest should be 64 hex characters",);
+        // Pin the actual digest so changes to CORPUS break this test
+        // and force a conscious update to the expected value.
+        assert_eq!(
+            d1,
+            "90958b0570ccd61734cb59dacb3a7944c9c1a6981258646af0af8b213c7369c6",
+            "corpus digest changed — update this expected value if CORPUS was intentionally modified",
+        );
+    }
+
+    #[test]
+    fn corpus_digest_changes_when_config_changes() {
+        let original = corpus_digest();
+
+        // Clone a case and modify its config bytes
+        let mut modified = CORPUS[0].config.to_vec();
+        modified.push(b'x');
+        let modified_digest = sha256_digest(&modified);
+        assert_ne!(original, modified_digest);
+    }
+
+    #[test]
+    fn corpus_digest_changes_when_id_changes() {
+        let original = corpus_digest();
+        let id_bytes = CORPUS[0].id.as_bytes();
+        let mut mutated = id_bytes.to_vec();
+        mutated.push(b'x');
+        let mutated_digest = sha256_digest(&mutated);
+        assert_ne!(original, mutated_digest);
     }
 
     // -- Evaluation logic tests --
@@ -921,5 +973,34 @@ mod tests {
         let d1 = corpus_digest();
         // Verify the digest is not trivially empty
         assert_ne!(d1, sha256_digest(b""));
+    }
+
+    #[test]
+    fn validate_sha256_rejects_short() {
+        assert!(validate_sha256("abc", "test").is_err());
+    }
+
+    #[test]
+    fn validate_sha256_rejects_non_hex() {
+        assert!(validate_sha256("z".repeat(64).as_str(), "test").is_err());
+    }
+
+    #[test]
+    fn validate_sha256_accepts_valid() {
+        assert!(validate_sha256(
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "test",
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn corpus_digest_stable_unchanged_after_read() {
+        // Verify the digest value is deterministic — calling twice
+        // from separate iterations gives the same result.
+        let d1 = corpus_digest();
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        let d2 = corpus_digest();
+        assert_eq!(d1, d2);
     }
 }
