@@ -13,5 +13,5 @@ name = "openntpd_rs"
 path = "src/lib.rs"
 
 [dependencies]
-openntpd-rs-core = { path = "../openntpd-rs-core", version = "0.2.0" }
-openntpd-rs-io = { path = "../openntpd-rs-io", version = "0.2.0" }
+openntpd-rs-core = { path = "../openntpd-rs-core", version = "0.3.0" }
+openntpd-rs-io = { path = "../openntpd-rs-io", version = "0.3.0" }
