@@ -251,7 +251,9 @@ pub fn parse_config(input: &[u8]) -> ParseResult {
                     alloc::format!("lexical error: {}", token_kind_name(&err_tok.kind)),
                     Some(err_tok.span),
                 );
-                parser.recover_to_newline();
+                // The lexer already owns line recovery — its next_token()
+                // skips the rest of the erroneous line.  Do NOT call
+                // recover_to_newline() here or the following directive is lost.
                 None
             }
 
@@ -371,14 +373,16 @@ impl<'a> Parser<'a> {
             let (n, span) = p.take_number_token().ok_or_else(|| {
                 p.emit_unexpected("number after 'weight'");
             })?;
-            if !(Weight::MIN..=Weight::MAX).contains(&(n as u8)) {
+            let min = Weight::MIN as i64;
+            let max = Weight::MAX as i64;
+            if !(min..=max).contains(&n) {
                 p.error(
-                    alloc::format!("weight must be {}..={}, got {n}", Weight::MIN, Weight::MAX),
+                    alloc::format!("weight must be {min}..={max}, got {n}"),
                     Some(span),
                 );
                 return Err(());
             }
-            opts.weight = Weight::new(n as u8).ok_or(())?;
+            opts.weight = Weight::new(n as u8).expect("validated weight");
             Ok(())
         }) {
             OptionResult::Applied => return OptionResult::Applied,
@@ -398,11 +402,21 @@ impl<'a> Parser<'a> {
     /// `constraint from <url> [<ip> ...]`
     /// `constraints from <url>`
     fn parse_constraint(&mut self, start: usize, is_pool: bool) -> Option<Spanned<Directive>> {
-        let (url_str, _url_span) = self.take_string_token().or_else(|| {
+        let (url_str, url_span) = self.take_string_token().or_else(|| {
             self.emit_unexpected("constraint URL");
             self.recover_to_newline();
             None
         })?;
+
+        let url_bytes = url_str.as_bytes();
+        if is_wildcard(url_bytes) || url_bytes.starts_with(b"https://*") {
+            self.error(
+                alloc::format!("wildcard '*' is not valid for constraint URL"),
+                Some(url_span),
+            );
+            self.recover_to_newline();
+            return None;
+        }
 
         let endpoint = parse_constraint_url(&url_str);
 
@@ -416,7 +430,7 @@ impl<'a> Parser<'a> {
                 }
                 match self.peek().kind {
                     TokenKind::String(_) => {
-                        let (s, _span) = self.take_string_token().unwrap();
+                        let (s, span) = self.take_string_token().unwrap();
                         let bytes = s.as_bytes().to_vec();
                         match parse_ip_addr(&bytes) {
                             Some(ip) => pinned.push(ip),
@@ -426,7 +440,7 @@ impl<'a> Parser<'a> {
                                         "invalid pinned address '{}'",
                                         StringRepr(&bytes),
                                     ),
-                                    None,
+                                    Some(span),
                                 );
                                 pin_error = true;
                                 self.recover_to_newline();
@@ -580,18 +594,16 @@ impl<'a> Parser<'a> {
             let (n, span) = p.take_number_token().ok_or_else(|| {
                 p.emit_unexpected("number after 'stratum'");
             })?;
-            if !(Stratum::MIN..=Stratum::MAX).contains(&(n as u8)) {
+            let min = Stratum::MIN as i64;
+            let max = Stratum::MAX as i64;
+            if !(min..=max).contains(&n) {
                 p.error(
-                    alloc::format!(
-                        "stratum must be {}..={}, got {n}",
-                        Stratum::MIN,
-                        Stratum::MAX
-                    ),
+                    alloc::format!("stratum must be {min}..={max}, got {n}"),
                     Some(span),
                 );
                 return Err(());
             }
-            opts.stratum = Stratum::new(n as u8).ok_or(())?;
+            opts.stratum = Stratum::new(n as u8).expect("validated stratum");
             Ok(())
         });
 
@@ -599,14 +611,16 @@ impl<'a> Parser<'a> {
             let (n, span) = p.take_number_token().ok_or_else(|| {
                 p.emit_unexpected("number after 'weight'");
             })?;
-            if !(Weight::MIN..=Weight::MAX).contains(&(n as u8)) {
+            let min = Weight::MIN as i64;
+            let max = Weight::MAX as i64;
+            if !(min..=max).contains(&n) {
                 p.error(
-                    alloc::format!("weight must be {}..={}, got {n}", Weight::MIN, Weight::MAX),
+                    alloc::format!("weight must be {min}..={max}, got {n}"),
                     Some(span),
                 );
                 return Err(());
             }
-            opts.weight = Weight::new(n as u8).ok_or(())?;
+            opts.weight = Weight::new(n as u8).expect("validated weight");
             Ok(())
         });
 
@@ -624,7 +638,7 @@ impl<'a> Parser<'a> {
     /// `query from <ip>`
     fn parse_query_from(&mut self, start: usize) -> Option<Spanned<Directive>> {
         let addr = match self.take_string_token() {
-            Some((s, _span)) => {
+            Some((s, span)) => {
                 let bytes = s.as_bytes().to_vec();
                 match parse_ip_addr(&bytes) {
                     Some(ip) => ip,
@@ -634,7 +648,7 @@ impl<'a> Parser<'a> {
                                 "'query from' requires a numeric IP address, got '{}'",
                                 StringRepr(&bytes),
                             ),
-                            None,
+                            Some(span),
                         );
                         self.recover_to_newline();
                         return None;
@@ -678,12 +692,20 @@ impl<'a> Parser<'a> {
     }
 
     fn parse_server_address(&mut self) -> Option<ServerAddress> {
-        let (s, _span) = self.take_string_token().or_else(|| {
+        let (s, span) = self.take_string_token().or_else(|| {
             self.emit_unexpected("address (IP or hostname)");
             self.recover_to_newline();
             None
         })?;
         let bytes = s.as_bytes().to_vec();
+        if is_wildcard(&bytes) {
+            self.error(
+                alloc::format!("wildcard '*' is not valid for server address"),
+                Some(span),
+            );
+            self.recover_to_newline();
+            return None;
+        }
         match parse_ip_addr(&bytes) {
             Some(ip) => Some(ServerAddress::Numeric(ip)),
             None => Some(ServerAddress::Name(ConfigString::new(bytes).unwrap())),
@@ -742,6 +764,10 @@ enum ServerKind {
 fn parse_ip_addr(bytes: &[u8]) -> Option<IpAddr> {
     let s = core::str::from_utf8(bytes).ok()?;
     s.parse::<IpAddr>().ok()
+}
+
+fn is_wildcard(bytes: &[u8]) -> bool {
+    bytes == b"*"
 }
 
 // ---------------------------------------------------------------------------
@@ -951,6 +977,34 @@ mod tests {
     #[test]
     fn invalid_server_weight_discards_directive() {
         let r = parse(b"server pool.ntp.org weight xyz\n");
+        assert_one_error(&r);
+        assert!(r.config.directives.is_empty());
+    }
+
+    #[test]
+    fn server_weight_257_rejected() {
+        let r = parse(b"server pool.ntp.org weight 257\n");
+        assert_one_error(&r);
+        assert!(r.config.directives.is_empty());
+    }
+
+    #[test]
+    fn server_weight_negative_wrap_rejected() {
+        let r = parse(b"server pool.ntp.org weight -255\n");
+        assert_one_error(&r);
+        assert!(r.config.directives.is_empty());
+    }
+
+    #[test]
+    fn server_wildcard_rejected() {
+        let r = parse(b"server *\n");
+        assert_one_error(&r);
+        assert!(r.config.directives.is_empty());
+    }
+
+    #[test]
+    fn servers_wildcard_rejected() {
+        let r = parse(b"servers *\n");
         assert_one_error(&r);
         assert!(r.config.directives.is_empty());
     }
@@ -1176,6 +1230,27 @@ mod tests {
     }
 
     #[test]
+    fn sensor_weight_257_rejected() {
+        let r = parse(b"sensor nmea0 weight 257\n");
+        assert_one_error(&r);
+        assert!(r.config.directives.is_empty());
+    }
+
+    #[test]
+    fn sensor_stratum_257_rejected() {
+        let r = parse(b"sensor nmea0 stratum 257\n");
+        assert_one_error(&r);
+        assert!(r.config.directives.is_empty());
+    }
+
+    #[test]
+    fn sensor_stratum_negative_wrap_rejected() {
+        let r = parse(b"sensor nmea0 stratum -255\n");
+        assert_one_error(&r);
+        assert!(r.config.directives.is_empty());
+    }
+
+    #[test]
     fn invalid_sensor_option_discards_directive() {
         let r = parse(b"sensor nmea0 stratum xyz\n");
         assert_one_error(&r);
@@ -1205,19 +1280,32 @@ mod tests {
     fn semantic_error_span_weight() {
         let r = parse(b"server pool.ntp.org weight 0\n");
         assert_one_error(&r);
-        // The error should reference the "0" token span
-        if let Some(d) = r.diagnostics.first() {
-            assert!(d.message.contains("weight"));
-        }
+        // '0' is at position 27
+        assert_eq!(r.diagnostics[0].span, Some(SourceSpan::new(27, 28)));
+        assert!(r.diagnostics[0].message.contains("weight"));
     }
 
     #[test]
     fn semantic_error_span_stratum() {
         let r = parse(b"sensor nmea0 stratum 0\n");
         assert_one_error(&r);
-        if let Some(d) = r.diagnostics.first() {
-            assert!(d.message.contains("stratum"));
-        }
+        // '0' is at position 21
+        assert_eq!(r.diagnostics[0].span, Some(SourceSpan::new(21, 22)));
+        assert!(r.diagnostics[0].message.contains("stratum"));
+    }
+
+    #[test]
+    fn semantic_error_span_pinned_address() {
+        let r = parse(b"constraint from example.com not-an-ip\n");
+        assert_one_error(&r);
+        assert!(r.diagnostics[0].span.is_some());
+    }
+
+    #[test]
+    fn semantic_error_span_query_address() {
+        let r = parse(b"query from not-an-ip\n");
+        assert_one_error(&r);
+        assert!(r.diagnostics[0].span.is_some());
     }
 
     // -- Error recovery --
@@ -1243,5 +1331,27 @@ mod tests {
     fn lexer_error_passthrough() {
         let r = parse(b"listen on *\n\0bad\nserver pool.ntp.org\n");
         assert!(!r.is_valid());
+    }
+
+    #[test]
+    fn lexer_error_preserves_following_directive() {
+        let r = parse(b"\0bad\nserver pool.ntp.org\n");
+        assert_eq!(r.errors().len(), 1);
+        assert_eq!(r.config.directives.len(), 1);
+        assert!(matches!(r.config.directives[0].value, Directive::Server(_)));
+    }
+
+    #[test]
+    fn constraint_wildcard_rejected() {
+        let r = parse(b"constraint from *\n");
+        assert_one_error(&r);
+        assert!(r.config.directives.is_empty());
+    }
+
+    #[test]
+    fn constraint_https_wildcard_rejected() {
+        let r = parse(b"constraint from \"https://*\"\n");
+        assert_one_error(&r);
+        assert!(r.config.directives.is_empty());
     }
 }
