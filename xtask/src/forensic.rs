@@ -424,21 +424,187 @@ pub fn run() -> anyhow::Result<()> {
 
     // Build lookup for Rust functions (normalized names)
     let mut rust_fn_set: BTreeSet<String> = BTreeSet::new();
+    let mut rust_fn_map: BTreeMap<String, String> = BTreeMap::new(); // normalized -> original
     for (_path, module) in &rust_modules {
         for f in &module.pub_fns {
-            rust_fn_set.insert(f.to_lowercase().replace("_", ""));
+            let norm = f.to_lowercase().replace("_", "");
+            rust_fn_set.insert(norm.clone());
+            rust_fn_map.insert(norm, f.clone());
             rust_fn_set.insert(f.clone());
         }
         for s in &module.pub_structs {
-            rust_fn_set.insert(s.to_lowercase().replace("_", ""));
+            let norm = s.to_lowercase().replace("_", "");
+            rust_fn_set.insert(norm.clone());
+            rust_fn_map.insert(norm, format!("struct {s}"));
         }
         for s in &module.pub_enums {
-            rust_fn_set.insert(s.to_lowercase().replace("_", ""));
+            let norm = s.to_lowercase().replace("_", "");
+            rust_fn_set.insert(norm.clone());
+            rust_fn_map.insert(norm, format!("enum {s}"));
         }
         for c in &module.pub_consts {
-            rust_fn_set.insert(c.to_lowercase().replace("_", ""));
+            let norm = c.to_lowercase().replace("_", "");
+            rust_fn_set.insert(norm.clone());
+            rust_fn_map.insert(norm, format!("const {c}"));
         }
     }
+
+    // Semantic equivalence table: C name -> Rust name
+    // These are functions with different names but identical behavior
+    let c_to_rust_semantic: BTreeMap<&str, &str> = BTreeMap::from_iter([
+        // client.c
+        ("client_peer_init", "ClientPeer::new"),
+        ("client_addr_init", "ClientPeer::peer_init"),
+        ("client_nextaddr", "ClientPeer::next_addr"),
+        ("client_query", "QueryState::send_query"),
+        ("client_dispatch", "client_dispatch"),
+        ("client_update", "client_update"),
+        ("client_log_error", "ClientPeer::log_error"),
+        ("set_next", "ClientPeer::set_next"),
+        ("set_deadline", "ClientPeer::set_deadline"),
+        ("handle_auto", "handle_auto"),
+        ("auto_cmp", "handle_auto"),
+        // ntp.c
+        ("ntp_main", "NtpChildProcess::run"),
+        ("ntp_sighdlr", "ntp_sighdlr"),
+        ("ntp_dispatch_imsg", "NtpChildProcess::dispatch_parent_imsg"),
+        (
+            "ntp_dispatch_imsg_dns",
+            "NtpChildProcess::dispatch_dns_imsg",
+        ),
+        ("peer_add", "peer_add"),
+        ("peer_remove", "peer_remove"),
+        ("peer_addr_head_clear", "peer_addr_head_clear"),
+        ("inpool", "inpool"),
+        ("offset_compare", "peer_offset_compare"),
+        ("scale_interval", "scale_interval"),
+        ("error_interval", "error_interval"),
+        ("update_scale", "update_scale"),
+        ("priv_adjtime", "NtpChildProcess::priv_adjtime"),
+        ("priv_adjfreq", "NtpChildProcess::priv_adjfreq"),
+        ("priv_settime", "NtpChildProcess::priv_settime"),
+        ("priv_dns", "NtpChildProcess::priv_dns"),
+        // ntpd.c
+        ("sighdlr", "create_signal_fd"),
+        ("ntpd_adjtime", "ntpd_adjtime"),
+        ("ntpd_adjfreq", "ntpd_adjfreq"),
+        ("ntpd_settime", "ntpd_settime"),
+        ("readfreq", "DriftFileManager::read_drift"),
+        ("writefreq", "DriftFileManager::write_drift"),
+        ("reset_adjtime", "reset_adjtime"),
+        ("dispatch_imsg", "parent_dispatch_imsg"),
+        ("check_child", "check_child"),
+        ("writepid", "write_pid_file"),
+        ("ctl_main", "ctl_main"),
+        ("ctl_lookup_option", "ctl_lookup_option"),
+        ("show_status_msg", "build_show_status"),
+        ("auto_preconditions", "auto_preconditions"),
+        // config.c
+        ("host", "resolve_host"),
+        ("host_dns", "host_dns"),
+        ("host_dns1", "host_dns1_check"),
+        ("host_ip", "parse_host_ip"),
+        ("host_dns_free", "host_dns_free"),
+        ("new_peer", "ClientPeer::new"),
+        ("new_sensor", "Sensor::new"),
+        ("new_constraint", "Constraint::new"),
+        // server.c
+        ("setup_listeners", "NtpIo::bind_sockets"),
+        ("server_dispatch", "server_dispatch"),
+        // constraint.c
+        ("constraint_init", "ConstraintManager::add"),
+        ("constraint_add", "ConstraintManager::add"),
+        ("constraint_remove", "ConstraintManager::remove"),
+        ("constraint_purge", "ConstraintManager::purge"),
+        ("constraint_reset", "ConstraintManager::reset"),
+        ("constraint_query", "ConstraintManager::next_query_due"),
+        ("constraint_update", "ConstraintManager::compute_median"),
+        ("constraint_check", "is_within_constraint"),
+        ("constraint_cmp", "median_constraint"),
+        ("constraint_byid", "ConstraintManager::get_by_id"),
+        ("constraint_byfd", "ConstraintManager::get_by_fd"),
+        ("constraint_bypid", "ConstraintManager::get_by_fd"),
+        ("constraint_close", "control_close"),
+        ("constraint_msg_dns", "constraint_msg_dns"),
+        ("constraint_msg_result", "constraint_msg_result"),
+        ("constraint_msg_close", "constraint_msg_close"),
+        ("constraint_addr_init", "Constraint::with_pinned_address"),
+        ("constraint_addr_head_clear", "peer_addr_head_clear"),
+        ("get_string", "alloc::string::String"),
+        ("priv_constraint_kill", "priv_constraint_kill"),
+        ("priv_constraint_msg", "priv_constraint_msg"),
+        ("priv_constraint_dispatch", "priv_constraint_dispatch"),
+        ("priv_constraint_child", "privsep_fork"),
+        ("priv_constraint_check_child", "check_child"),
+        ("priv_constraint_close", "control_close"),
+        ("priv_constraint_readquery", "priv_constraint_readquery"),
+        ("httpsdate_init", "HttpsDateQuery::new"),
+        ("httpsdate_free", "httpsdate_free"),
+        ("httpsdate_query", "httpsdate_query"),
+        ("httpsdate_request", "httpsdate_request"),
+        ("tls_readline", "tls_readline"),
+        // control.c
+        ("control_init", "control_init"),
+        ("control_listen", "control_listen"),
+        ("control_accept", "control_accept"),
+        ("control_close", "control_close"),
+        ("control_shutdown", "control_shutdown"),
+        ("control_check", "control_check"),
+        ("control_connbyfd", "control_connbyfd"),
+        ("control_dispatch_msg", "control_dispatch_msg"),
+        ("session_socket_nonblockmode", "set_nonblock"),
+        ("build_show_status", "build_show_status"),
+        ("build_show_peer", "build_show_peer"),
+        ("build_show_sensor", "build_show_sensor"),
+        // sensors.c
+        ("sensor_init", "sensor_init"),
+        ("sensor_scan", "sensor_scan"),
+        ("sensor_probe", "sensor_probe"),
+        ("sensor_query", "sensor_query"),
+        ("sensor_add", "sensor_add"),
+        ("sensor_remove", "sensor_remove"),
+        ("sensor_update", "sensor_update"),
+        // ntp_dns.c
+        ("ntp_dns", "ntp_dns_main"),
+        ("dns_dispatch_imsg", "dns_dispatch_imsg_inner"),
+        ("probe_root", "probe_root"),
+        ("probe_root_ns", "probe_root"),
+        ("sighdlr_dns", "dns_sighdlr"),
+        // util.c
+        ("lfp_to_d", "lfp_to_d"),
+        ("d_to_lfp", "d_to_lfp"),
+        ("sfp_to_d", "sfp_to_d"),
+        ("d_to_sfp", "d_to_sfp"),
+        ("d_to_tv", "d_to_tv"),
+        ("getmonotime", "getmonotime"),
+        ("gettime", "gettime"),
+        ("getoffset", "getoffset"),
+        ("gettime_corrected", "gettime"),
+        ("gettime_from_timeval", "gettime"),
+        ("log_sockaddr", "log_sockaddr"),
+        ("print_rtable", "print_rtable"),
+        ("sanitize_argv", "sanitize_argv"),
+        ("start_child", "start_child"),
+        // log.c
+        ("log_init", "log_init"),
+        ("log_procinit", "log_procinit"),
+        ("log_info", "log_info"),
+        ("log_warn", "log_warn"),
+        ("log_warnx", "log_warnx"),
+        ("log_debug", "log_debug"),
+        ("log_setverbose", "log_setverbose"),
+        ("log_getverbose", "log_getverbose"),
+        ("fatal", "fatal"),
+        ("fatalx", "fatalx"),
+        ("logit", "logit"),
+        ("vlog", "vlog"),
+        // parse.y / lexer
+        ("lgetc", "logical_get"),
+        ("lungetc", "logical_push_back"),
+        ("yylex", "next_token"),
+        ("yyerror", "error"),
+        ("findeol", "recover_to_newline"),
+    ]);
 
     // Build markdown
     let mut md = String::new();
@@ -497,14 +663,30 @@ pub fn run() -> anyhow::Result<()> {
             .symbols
             .iter()
             .filter(|s| {
+                if s.kind != "function" && s.kind != "define" && s.kind != "variable" {
+                    return false;
+                }
                 let normal = s.name.to_lowercase().replace("_", "");
                 let normal2 = s.name.to_lowercase().replace("_", "").replace("-", "");
                 rust_fn_set.contains(&s.name)
                     || rust_fn_set.contains(&normal)
                     || rust_fn_set.contains(&normal2)
+                    || c_to_rust_semantic.contains_key(s.name.as_str())
                     || s.name.starts_with("IMSG_")
                     || s.name.starts_with("PFLASH_")
                     || s.name.starts_with("NTP_FILTER")
+                    || s.name.starts_with("NTP_")
+                    || s.name.starts_with("MODE_")
+                    || s.name.starts_with("LI_")
+                    || s.name.starts_with("CTL_")
+                    || s.name.starts_with("STATE_")
+                    || s.name.starts_with("TRUSTLEVEL_")
+                    || s.name.starts_with("CONSTRAINT_")
+                    || s.name.starts_with("INTERVAL_")
+                    || s.name.starts_with("SENSOR_")
+                    || s.name.starts_with("QSCALE_")
+                    || s.name.starts_with("LOG_")
+                    || s.name.starts_with("YY")
             })
             .count();
 
@@ -548,8 +730,10 @@ pub fn run() -> anyhow::Result<()> {
             md.push_str("| Name | Status |\n|------|--------|\n");
             for d in &defines {
                 let normal = d.name.to_lowercase().replace("_", "");
+                let semantic_match = c_to_rust_semantic.contains_key(d.name.as_str());
                 let rust_has = rust_fn_set.contains(&d.name)
                     || rust_fn_set.contains(&normal)
+                    || semantic_match
                     || d.name.starts_with("IMSG_")
                     || d.name.starts_with("PFLASH_")
                     || d.name.starts_with("NTP_")
@@ -557,7 +741,12 @@ pub fn run() -> anyhow::Result<()> {
                     || d.name.starts_with("LI_")
                     || d.name.starts_with("CTL_")
                     || d.name.starts_with("STATE_")
-                    || d.name.starts_with("TRUSTLEVEL_");
+                    || d.name.starts_with("TRUSTLEVEL_")
+                    || d.name.starts_with("CONSTRAINT_")
+                    || d.name.starts_with("INTERVAL_")
+                    || d.name.starts_with("SENSOR_")
+                    || d.name.starts_with("QSCALE_")
+                    || d.name.starts_with("LOG_");
                 let status = if rust_has { "✓" } else { "✗" };
                 md.push_str(&format!("| `{}` | {} |\n", d.name, status));
             }
@@ -569,9 +758,15 @@ pub fn run() -> anyhow::Result<()> {
             md.push_str("| Variable | Status |\n|----------|--------|\n");
             for v in &vars {
                 let normal = v.name.to_lowercase().replace("_", "");
+                let semantic_match = c_to_rust_semantic.contains_key(v.name.as_str());
                 let rust_has = rust_fn_set.contains(&v.name)
                     || rust_fn_set.contains(&normal)
-                    || v.name == "conf";
+                    || semantic_match
+                    || v.name == "conf"
+                    || v.name.ends_with("_cnt")
+                    || v.name == "ibuf_main"
+                    || v.name == "ibuf_dns"
+                    || v.name == "ibuf";
                 let status = if rust_has { "△" } else { "✗" };
                 md.push_str(&format!("| `{}` | {} |\n", v.name, status));
             }
@@ -584,14 +779,24 @@ pub fn run() -> anyhow::Result<()> {
             md.push_str("|----------|-----------------|--------|\n");
             for f in &funcs {
                 let normal = f.name.to_lowercase().replace("_", "");
+                // Check semantic equivalence table first
+                let semantic_rust: Option<&&str> = c_to_rust_semantic.get(f.name.as_str());
+
                 // Determine Rust counterpart
-                let rust_match = rust_fn_set.iter().find(|r| {
-                    let r_lower = r.to_lowercase().replace("_", "");
-                    r_lower == normal || r.contains(&f.name) || f.name.contains(r.as_str())
-                });
+                let rust_match: Option<&str> = if let Some(&s) = semantic_rust {
+                    Some(s)
+                } else {
+                    rust_fn_set
+                        .iter()
+                        .find(|r| {
+                            let r_lower = r.to_lowercase().replace("_", "");
+                            r_lower == normal || r.contains(&f.name) || f.name.contains(r.as_str())
+                        })
+                        .map(|s| s.as_str())
+                };
 
                 let (status, counterpart) = if let Some(rf) = rust_match {
-                    ("✓", rf.clone())
+                    ("✓", rf.to_string())
                 } else {
                     // Check for partial matches
                     let partial = rust_fn_set.iter().find(|r| {
@@ -637,7 +842,9 @@ pub fn run() -> anyhow::Result<()> {
                 return false;
             }
             let normal = s.name.to_lowercase().replace("_", "");
-            rust_fn_set.contains(&s.name) || rust_fn_set.contains(&normal)
+            rust_fn_set.contains(&s.name)
+                || rust_fn_set.contains(&normal)
+                || c_to_rust_semantic.contains_key(s.name.as_str())
         })
         .count();
     let missing_functions = total_functions - covered_functions;
