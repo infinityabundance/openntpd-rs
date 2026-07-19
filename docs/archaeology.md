@@ -1,5 +1,3 @@
----
-
 ## 17. OpenNTPD code archaeology atlas — version history and design philosophy
 
 ### 17.1 Historical timeline
