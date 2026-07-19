@@ -493,13 +493,6 @@ fn generate_negative_capabilities(docs_gen: &Path) -> anyhow::Result<()> {
     md.push_str("## Highest-risk unsafe module\n\n`io::socket` — recvmsg, CMSG macros, sockaddr casts. Structurally correct; no runtime tests for kernel timestamp ancillary parsing or truncation rejection.\n\n");
     md.push_str("## Deployment boundary\n\nopenntpd-rs does **not**: discipline a real system clock in production, run as a privileged daemon, connect to a running ntpd, or make any production-replacement claim.\n");
 
-    // Append the exhaustive forensic audit.
-    md.push_str(&forensic_audit());
-
     std::fs::write(docs_gen.join("negative-capabilities.md"), &md)?;
     Ok(())
-}
-
-fn forensic_audit() -> String {
-    include_str!("../audit/forensic.md").to_string()
 }

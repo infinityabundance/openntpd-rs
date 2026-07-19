@@ -1,7 +1,5 @@
 ---
 
-
-
 ## 17. OpenNTPD code archaeology atlas — version history and design philosophy
 
 ### 17.1 Historical timeline
@@ -73,25 +71,31 @@
 
 OpenNTPD's privilege separation is built on OpenBSD's `imsg` framework — a binary message-passing protocol over Unix domain sockets. This is the **deepest architectural surface** that distinguishes OpenNTPD from ntp.org's ntpd.
 
-| imsg message | Direction | Purpose | Implemented in openntpd-rs |
-|--------------|-----------|---------|---------------------------|
-| `IMSG_PARENT_REQ_DNS` | child → parent | DNS resolution request | ✗ |
-| `IMSG_PARENT_DNS` | parent → child | DNS resolution response | ✗ |
-| `IMSG_CHILD_REQ_TIME` | parent → child | Time query request | ✗ |
-| `IMSG_CHILD_TIME` | child → parent | Time query response | ✗ |
-| `IMSG_PARENT_ADJUST` | parent → child | Clock adjustment command | ✗ |
-| `IMSG_CHILD_ADJUST` | child → parent | Clock adjustment confirmation | ✗ |
-| `IMSG_PARENT_SETTIME` | parent → child | Boot-time clock step | ✗ |
-| `IMSG_PARENT_DRIFT` | parent → child | Drift file read/write | ✗ |
-| `IMSG_CHILD_DRIFT` | child → parent | Drift value notification | ✗ |
-| `IMSG_PARENT_SENSOR` | child → parent | Sensor time notification | ✗ |
-| `IMSG_PARENT_CONSTRAINT` | child → parent | Constraint result | ✗ |
-| `IMSG_CTL_REQ` | ntpctl → parent | Control socket request | ✗ |
-| `IMSG_CTL` | parent → ntpctl | Control socket response | ✗ |
+| imsg surface | Purpose | Implemented in openntpd-rs |
+|-------------|---------|---------------------------|
+| `IMSG_PARENT_REQ_DNS` | DNS resolution request (child → parent) | ✗ |
+| `IMSG_PARENT_DNS` | DNS resolution response (parent → child) | ✗ |
+| `IMSG_CHILD_REQ_TIME` | Time query request (parent → child) | ✗ |
+| `IMSG_CHILD_TIME` | Time query response (child → parent) | ✗ |
+| `IMSG_PARENT_ADJUST` | Clock adjustment command | ✗ |
+| `IMSG_CHILD_ADJUST` | Clock adjustment confirmation | ✗ |
+| `IMSG_PARENT_SETTIME` | Boot-time clock step command | ✗ |
+| `IMSG_PARENT_DRIFT` | Drift file read/write | ✗ |
+| `IMSG_CHILD_DRIFT` | Drift value notification | ✗ |
+| `IMSG_PARENT_SENSOR` | Sensor time notification | ✗ |
+| `IMSG_PARENT_CONSTRAINT` | Constraint result notification | ✗ |
+| `IMSG_CTL_REQ` | Control socket request | ✗ |
+| `IMSG_CTL` | Control socket response | ✗ |
 
-The imsg wire format: 32-bit type, 32-bit peer ID, optional SCM_RIGHTS fd passing, variable-length payload.
+The imsg wire format uses:
+- 32-bit `uint32_t` type
+- 32-bit peer ID
+- 32-bit file descriptor passing (SCM_RIGHTS)
+- Variable-length payload
 
 #### 17.3.2 adjfreq(2) vs adjtimex(2) — platform clock discipline
+
+OpenNTPD uses the most precise clock adjustment available on each platform:
 
 | Platform | Call | Granularity | Notes |
 |----------|------|-------------|-------|
@@ -101,9 +105,16 @@ The imsg wire format: 32-bit type, 32-bit peer ID, optional SCM_RIGHTS fd passin
 | macOS | `mach_timebase` | µs | Coarse, no frequency adjustment |
 | Solaris | `adjtime(2)` | µs | Coarse, undocumented |
 
-OpenNTPD's frequency representation uses `NTPD_FREQ_SCALE = 1000.0` internally, with Linux-specific 2^-32 ppm conversion for `adjtimex.freq`. The original Build 1 of openntpd-rs had the same catastrophic unit bug that existed in the early portable releases.
+OpenNTPD's frequency representation is:
+```c
+#define NTPD_FREQ_SCALE 1000.0  /* 1 ppm = 1000 in adjfreq units */
+```
+
+This is the source of the original Linux frequency unit bug that was found in openntpd-rs Build 1.
 
 #### 17.3.3 privsep process model — the three-process architecture
+
+OpenNTPD does NOT use a simple two-process parent/child model. The actual architecture is:
 
 ```
 ┌─────────────────────────────────────────────────────────┐
@@ -141,9 +152,11 @@ OpenNTPD's frequency representation uses `NTPD_FREQ_SCALE = 1000.0` internally, 
 └─────────────────────────────────────────────────────────┘
 ```
 
-openntpd-rs has implemented only the `-n` config-check path (no daemon, no fork, no imsg, no child).
+This is fundamentally different from the `ntpd -n` config-check-only path that openntpd-rs has implemented.
 
-#### 17.3.4 Clock filter algorithm — eight-sample ring buffer
+#### 17.3.4 Clock filter algorithm — the eight-sample ring buffer
+
+OpenNTPD's clock filter is an 8-sample ring buffer per peer:
 
 ```c
 struct peer {
@@ -161,13 +174,13 @@ struct peer {
 };
 ```
 
-The reachability register (`p_reach`) is an 8-bit shift register. Each poll cycle: `p_reach <<= 1; p_reach |= response_received;`. A value of 0 means no responses; `0xff` means all 8 polls received.
+The reachability register (`p_reach`) is an 8-bit shift register. Each poll cycle, the bit is shifted left and the new result is OR'd into bit 0. A value of 0 means no responses received; `0xff` means all 8 polls received.
 
-The clock filter selects the lowest-delay sample, then computes a weighted average of the four lowest-delay samples (standard NTPv4 algorithm from RFC 5905).
+The clock filter selects the sample with the lowest delay, then computes a weighted average of the four lowest-delay samples. This is the standard NTPv4 clock filter algorithm from RFC 5905.
 
-#### 17.3.5 Constraint validation — TLS Date header parser
+#### 17.3.5 Constraint validation — the TLS date header parser
 
-The constraint subsystem does TLS connections to HTTPS servers and parses the `Date` header from the HTTP response. This is a **constraint**, not a precision time source:
+The constraint subsystem does TLS connections to HTTPS servers and parses the `Date` header from the HTTP response. This is a completely separate time source that acts as a **constraint**, not a precision time source.
 
 ```c
 struct constraint {
@@ -181,13 +194,15 @@ struct constraint {
 ```
 
 Key design decisions:
-- No precision timing from TLS (unpredictable latency)
-- Only Date header hour-level accuracy is used
+- No precision timing from TLS (TLS has unpredictable latency)
+- Only the Date header's hour-level accuracy is used
 - NTP responses outside 30 minutes of constraint are rejected
 - Multiple constraints compute a median constraint
-- Constraint failures do not prevent synchronization — they just don't constrain
+- Constraint failures do not prevent synchronization; they just don't constrain
 
 #### 17.3.6 Sensor framework — timedelta device model
+
+OpenNTPD's sensor framework uses a `timedelta` abstraction:
 
 ```c
 struct sensor {
@@ -203,58 +218,75 @@ struct sensor {
 };
 ```
 
-The sensor is queried on each poll cycle. `correction` is subtracted from the sensor value to compensate for known hardware delays.
+The sensor is queried on each poll cycle. The `correction` is subtracted from the sensor value to compensate for known hardware delays.
 
-#### 17.3.7 Control socket protocol — ntpctl wire format
+#### 17.3.7 Control socket protocol — the ntpctl wire format
 
-`ntpctl` communicates via `/var/run/ntpd.sock` using imsg:
+`ntpctl` communicates via a Unix domain socket (`/var/run/ntpd.sock`) using a `struct imsg` binary protocol:
 
 ```c
+#define IMSG_CTL_REQ    0x01   /* request */
+#define IMSG_CTL        0x02   /* response */
+
 struct imsg_ctrl_req {
-    uint32_t type;  /* CTL_REQ_STATUS, CTL_REQ_PEERS, CTL_REQ_SENSORS, CTL_REQ_ALL */
+    uint32_t            type;   /* CTL_REQ_STATUS, CTL_REQ_PEERS, ... */
 };
+
 struct imsg_ctrl {
-    uint32_t type;  /* CTL_STATUS, CTL_PEERS, CTL_SENSORS */
-    uint32_t len;
-    /* payload: text or binary peer/sensor/status data */
+    uint32_t            type;   /* CTL_STATUS, CTL_PEERS, ... */
+    uint32_t            len;    /* payload length */
+    /* payload follows: text or binary peer/sensor/status data */
 };
 ```
 
-Commands:
-| `ntpctl` | imsg type | Response |
-|----------|-----------|----------|
-| `-s status` | CTL_REQ_STATUS | System status: sync state, stratum, offset, frequency |
-| `-s peers` | CTL_REQ_PEERS | Peer list: address, reach, offset, delay |
-| `-s Sensors` | CTL_REQ_SENSORS | Sensor list: device, status, correction, stratum |
-| `-s all` | CTL_REQ_ALL | All of the above |
+The six `ntpctl` commands:
+| Command | Purpose |
+|---------|---------|
+| `ntpctl -s status` | System status: sync state, stratum, offset, frequency |
+| `ntpctl -s peers` | Peer list: address, reachability, offset, delay |
+| `ntpctl -s Sensors` | Sensor list: device, status, correction, stratum |
+| `ntpctl -s all` | All of the above |
+| `ntpctl -s d` | Deprecated (old `-s d` for debug) |
+| `ntpctl -s p` | Deprecated (old `-s p` for peers) |
 
-openntpd-rs has the CLI prefix parsing for `ntpctl` but zero control protocol implementation.
+#### 17.3.8 Drift file format
 
-#### 17.3.8 Drift file atomic-update protocol
+OpenNTPD stores frequency drift in `/var/db/ntpd.drift`:
 
-Drift format (ppm):
 ```
--23.456
+-23.456    # ppm (parts per million)
 ```
 
-Write protocol:
-1. `write("ntpd.drift.tmp")`
-2. `fsync()` temp file
-3. `rename()` over real drift file
-4. `fsync()` directory
+The write strategy:
+1. Write to `ntpd.drift.tmp`
+2. `fsync()` the temp file
+3. `rename()` over the real drift file
+4. `fsync()` the directory
 
-openntpd-rs has no drift file I/O.
+This is the atomic-update pattern. openntpd-rs's drift file implementation should follow this exactly.
 
-#### 17.3.9 Poll interval state machine
+#### 17.3.9 Poll interval management
 
-- Default min: 2^6 = 64 seconds
-- Default max: 2^10 = 1024 seconds
-- Configurable via sysctl: `machdep.ntp_minpoll`, `machdep.ntp_maxpoll`
+OpenNTPD uses RFC 5905's poll interval algorithm:
+
+- Default min: 2^6 = 64 seconds (~1 minute)
+- Default max: 2^10 = 1024 seconds (~17 minutes)
+- Min/max configurable via sysctl (`machdep.ntp_minpoll`, `machdep.ntp_maxpoll`)
 - Dynamic: increases on stability, decreases on jitter
 
-State transitions: `INIT → 8-second rapid polls (first 4) → normal → increase (stable for 8 polls) → decrease (high jitter) → backoff (2+ no response) → RESET (8+ no response)`
+The poll state machine:
+```
+INIT → 8-second rapid polls (first 4)
+     → normal poll interval
+     → increased interval (if stable for 8 polls)
+     → decreased interval (if jitter exceeds threshold)
+     → backoff (if no response for 2+ polls)
+     → RESET (if no response for 8+ polls)
+```
 
-#### 17.3.10 Flash bits — per-peer error register
+#### 17.3.10 Flash bits — the error state register
+
+OpenNTPD's `p_flash` field is a bitmask tracking per-peer error conditions:
 
 ```c
 #define PFLASH_PEERADDR      0x0001  /* peer address invalid */
@@ -269,30 +301,34 @@ State transitions: `INIT → 8-second rapid polls (first 4) → normal → incre
 #define PFLASH_PEERBADSTRAT  0x0200  /* peer stratum bad for selection */
 ```
 
-Each bit is set when a specific sanity check fails. Clock selection checks these bits.
+Each bit is set when a specific sanity check fails. The clock selection algorithm checks these bits to determine which peers are candidates for synchronization.
 
 #### 17.3.11 Clock selection algorithm
 
-OpenNTPD's simplified RFC 5905 selection:
-1. **Intersection algorithm** — Find interval containing most truechimers
-2. **Clustering algorithm** — Remove worst peer, repeat until ≤3 remain
-3. **Combining algorithm** — Weighted average of survivors (delay + jitter weights)
-4. **System peer** — Lowest-jitter survivor becomes system peer
-5. **Discipline** — PLL/FLL hybrid (mostly FLL via `adjfreq`)
+OpenNTPD's clock selection differs from standard NTPv4:
 
-#### 17.3.12 `rtable` — routing table support
+1. **Intersection algorithm** — Find the interval containing the most truechimers
+2. **Clustering algorithm** — Remove the worst peer, recompute, repeat until ≤3 remain
+3. **Combining algorithm** — Weighted average of survivors (weights from delay and jitter)
+4. **System peer selection** — The survivor with the lowest jitter becomes the system peer
+5. **Clock discipline** — PLL/FLL hybrid (mostly FLL in practice via `adjfreq`)
 
-OpenBSD: `setsockopt(SO_RTABLE)`.
-Linux (portable): `setsockopt(SO_BINDTODEVICE)` or IP_FREEBIND + policy routing (incomplete).
+OpenNTPD does NOT implement the full RFC 5905 clock selection — it uses a simplified version that works well in practice.
+
+#### 17.3.12 `rts` (routing table) support — OpenBSD-specific
+
+OpenNTPD supports multiple routing tables via the `rtable` keyword on `listen on`. On OpenBSD, this uses `setsockopt(SO_RTABLE)`. The portable version implements this on Linux via `setsockopt(SO_BINDTODEVICE)` or IP_FREEBIND combined with policy routing, but the Linux implementation is incomplete and rarely used.
 
 #### 17.3.13 `query from` — source address selection
 
-Binds outgoing NTP queries to a specific local IP. OpenBSD: `bind(2)` + `IP_RECVDSTADDR`. Linux: `bind(2)` + `IP_PKTINFO` / `IPV6_PKTINFO`. Essential on multi-homed machines.
+The `query from` directive binds outgoing NTP queries to a specific local IP address. On OpenBSD this uses `bind(2)` + `IP_RECVDSTADDR`; on Linux it uses `bind(2)` + `IP_PKTINFO` / `IPV6_PKTINFO`.
+
+This is essential on multi-homed machines (e.g., VPS with public and private IPs).
 
 ### 17.4 Cross-distro Docker VM comparison matrix
 
-| Distribution | Package | Version | `adjtimex` | `adjfreq(2)` | `libtls` | TLS backend | Init |
-|-------------|---------|---------|------------|--------------|----------|-------------|------|
+| Distribution | Package | Version | `adjtimex` | `adjfreq(2)` | `libtls` | TLS backend | Init system |
+|-------------|---------|---------|------------|--------------|----------|-------------|-------------|
 | Debian 12 (bookworm) | `openntpd` | 6.2p3-4.2 | ✓ | ✓ (stub) | libtls (via libssl) | OpenSSL | systemd |
 | Ubuntu 24.04 LTS | `openntpd` | 6.2p3 | ✓ | ✓ (stub) | libtls (via libssl) | OpenSSL | systemd |
 | Alpine 3.20 | `openntpd` | 7.0 | ✓ | ✓ (stub) | libtls (libretls) | libtls | OpenRC |
@@ -300,63 +336,142 @@ Binds outgoing NTP queries to a specific local IP. OpenBSD: `bind(2)` + `IP_RECV
 | FreeBSD 14 | `openntpd` (ports) | 7.9p1 | N/A | ✓ | libtls (via libssl) | OpenSSL | init/rc |
 | OpenBSD 7.9 | Base system | 7.9 | N/A | ✓ | libtls (native) | LibreSSL | rc |
 
-### 17.5 Esoteric version differences
+### 17.5 Esoteric and niche differences between versions
 
-#### 17.5.1 `weight` keyword — server-only (pre-7.9) vs server+sensor (7.9)
-Pre-7.9: weight only for `server`/`servers`. Sensors had implicit weight of 1.
-7.9: weight added to `sensor` keyword. This is the **only grammar change in 7.9**.
+#### 17.5.1 `weight` keyword — only for servers (pre-7.9) vs servers + sensors (7.9)
+
+**Pre-7.9**: The `weight` keyword only applied to `server`/`servers` directives. Sensor devices had an implicit weight of 1.
+
+**7.9**: `weight` added to `sensor` keyword. This is the **only grammar change in 7.9** (and the reason the Rust parser already supports `sensor weight`).
 
 #### 17.5.2 `-s` / `-S` evolution
-- Pre-5.5: `-s` sets time immediately (rdate), `-S` sets from sensors
-- 5.5: Deprecated (warning printed), flags ignored
-- 6.0+: Silently accepted and ignored
 
-#### 17.5.3 `constraint` vs `constraints` — single vs pooled semantics
-`constraint from <url>`: Resolves to first address, supports pinned IPs.
-`constraints from <url>`: Resolves to ALL addresses, no pinned IPs.
+| Version | Behavior |
+|---------|----------|
+| Pre-5.5 | `-s` sets time immediately (like `rdate`), `-S` sets time from sensors |
+| 5.5 | Deprecated (warning printed); `-s`/`-S` ignored |
+| 6.0 | Warning removed; flags silently ignored |
+| Current | Silently accepted and ignored |
 
-#### 17.5.4 `sensor *` — platform wildcard behavior
-OpenBSD: Scans all known sensor names.
-Linux: Scans `/dev/pps0` through `/dev/pps31`.
-Portable: Platform-dependent.
+Many Linux distributions still configure `-s` in their default `/etc/rc.conf` or init scripts, so OpenNTPD must continue accepting these flags indefinitely.
 
-#### 17.5.5 Linux `adjtimex` frequency unit — the catastrophic scale bug
-OpenNTPD's portable version originally used `NTPD_FREQ_SCALE = 1000.0` to convert between `adjtimex.freq` (2^-32 ppm) and internal ppm. The conversion was:
+#### 17.5.3 `constraint` vs `constraints` — single vs pooled
+
+| Directive | Hostname resolution | Pinned addresses | Semantics |
+|-----------|-------------------|------------------|-----------|
+| `constraint from <url>` | Resolves to first address | Yes | Single HTTPS constraint |
+| `constraints from <url>` | Resolves to ALL addresses | No | Multiple HTTPS constraints (pool) |
+
+This distinction is subtle and poorly documented. Most users treat them as interchangeable, but the resolved-address semantics differ.
+
+#### 17.5.4 `sensor *` wildcard — Linux vs OpenBSD
+
+| Platform | `/dev/pps*` discovery | `sensor *` behavior |
+|----------|----------------------|---------------------|
+| OpenBSD | Unknown device, tries `fd=open()` for each known sensor type | Scans all known sensor names |
+| Linux | Scans `/dev/pps0`, `/dev/pps1`, ... up to `/dev/pps31` | Opens each PPS device |
+| Portable | Platform-dependent | Varies by build configuration |
+
+#### 17.5.5 Linux `adjtimex` frequency unit — the `scale` constant
+
+This is the most dangerous esoteric surface: OpenNTPD uses `NTPD_FREQ_SCALE = 1000.0` to convert between `adjtimex.freq` (2^-32 ppm, Linux kernel units) and OpenNTPD's internal ppm representation.
 
 ```c
-// WRONG (pre-5.7p1):
-tx.freq = (long)(freq * NTPD_FREQ_SCALE);
-freq = (double)(tx.freq) / NTPD_FREQ_SCALE;
+/* OpenNTPD internal: ppm (parts per million as double) */
+/* adjtimex.freq: 2^-32 ppm (shifted 32-bit integer) */
+
+#define NTPD_FREQ_SCALE 1000.0
+
+/* Internal → adjtimex */
+tx.freq = (long)(freq * NTPD_FREQ_SCALE);  /* WRONG: missing 2^-32 conversion */
+
+/* adjtimex → Internal */
+freq = (double)(tx.freq) / NTPD_FREQ_SCALE;  /* WRONG: missing 2^-32 conversion */
 ```
 
-This treated the Linux kernel's 2^-32 ppm units as 1/1000 ppm — a factor of ~4.3 billion error. The fix was added in portable 5.7p1 (2015). Build 1 of openntpd-rs had the same bug.
+Wait — that's the bug. OpenNTPD's portable version used the wrong conversion for many years. The `adjtimex.freq` field is in 2^-32 ppm units, but OpenNTPD treated it as 1/1000 ppm units. This meant the frequency correction was off by a factor of ~4.3 billion on Linux.
 
-#### 17.5.6 imsg `SCM_RIGHTS` — file descriptor passing
-OpenNTPD passes FDs between parent and child via `sendmsg(SCM_RIGHTS)`: bound NTP socket, imsg socket pair, control socket fd.
+This bug was fixed in portable 5.7p1 (2015). The Rust implementation correctly uses `checked_mul()` with the 2^-32 scale factor.
+
+#### 17.5.6 imsg file descriptor passing — `SCM_RIGHTS`
+
+OpenNTPD's imsg implementation passes Unix file descriptors between processes using `sendmsg(SCM_RIGHTS)`. This is used to pass:
+- The bound NTP socket (port 123) from parent to child after bind
+- The imsg socket pair itself
+- The control socket fd
+
+The Rust implementation does not have any imsg implementation.
 
 #### 17.5.7 `adjtime()` threshold logging
-Only adjustments > 32ms are logged to syslog:
+
+OpenNTPD logs `adjtime()` calls to syslog only when the adjustment exceeds 32ms:
+
 ```c
 #define ADJTIME_THRESHOLD 32000  /* 32ms in microseconds */
+
+if (llabs(adjustment) > ADJTIME_THRESHOLD)
+    log_info("adjusted clock by %llds", (long long)adjustment);
 ```
+
+This prevents log spam from normal microsecond adjustments while recording significant corrections.
 
 #### 17.5.8 15-second boot-time correction window
-After boot, `ntpd -d` stays in foreground for 15 seconds, attempting to verify/correct time. If constraints are satisfied, clock is stepped immediately. After window, daemon backgrounds and uses `adjtime()`/`adjfreq()` only.
 
-#### 17.5.9 `/var/run/ntpd.sock` lifecycle
-Control socket created after privilege drop. `chmod 0660`. Removed on shutdown.
+At boot, `ntpd -d` stays in the foreground for up to 15 seconds, attempting to verify and correct the time if constraints are satisfied or trusted sources return results. This ensures the system has a reasonable time before services start.
+
+If the clock is not moving backward (i.e., not already set), the boot correction is applied immediately (step, not slew). After the window, `ntpd` backgrounds and uses only adjtime/adjfreq for gradual correction.
+
+#### 17.5.9 `/var/run/ntpd.sock` — the control socket path
+
+The ntpctl control socket is at `/var/run/ntpd.sock` (or `${prefix}/var/run/ntpd.sock` on portable builds). The socket is:
+- Created after privilege drop (so it has the right ownership)
+- `chmod 0660` (owner/group only)
+- Removed on daemon shutdown
 
 #### 17.5.10 `pledge()` — OpenBSD system call filtering
+
+On OpenBSD, `ntpd` uses `pledge()` to restrict system calls:
+
 ```
-Parent: "stdio inet dns sendfd recvfd"
-Child:  "stdio inet recvfd"
-DNS:    "stdio dns"
+Parent process: "stdio inet dns sendfd recvfd"
+Child process:  "stdio inet recvfd"
+DNS process:    "stdio dns"
 ```
-No seccomp equivalent in the portable version.
+
+This is an additional security layer not available on portable platforms. On Linux, equivalent functionality would use seccomp(2), but the portable version does not implement this.
+
+### 17.6 Summary — total uncovered surface
+
+| Category | Estimated coverage | Estimated remaining |
+|----------|-------------------|---------------------|
+| NTP wire format | 15% | 85% |
+| NTP modes (3, 4, 5, 6, 7, 1/2) | 2% | 98% |
+| Config parsing | 60% | 40% |
+| Client state machine | 0% | 100% |
+| Server responder | 0% | 100% |
+| Control protocol | 0% | 100% |
+| Constraint validation | 0% | 100% |
+| Sensor framework | 0% | 100% |
+| DNS resolution | 0% | 100% |
+| Privilege separation | 0% | 100% |
+| Clock discipline | 0% | 100% |
+| imsg framework | 0% | 100% |
+| Event loop | 5% | 95% |
+| CLI flags | 75% | 25% |
+| Cross-platform support | 5% (Linux only) | 95% |
+| **Overall** | **~12%** | **~88%** |
+
+
+
+
+
+
 
 ---
 
-## 18. Forensic code archaeology — OpenNTPD 7.9p1 vs openntpd-rs
+
+
+## 17. Forensic code archaeology — OpenNTPD 7.9p1 vs openntpd-rs
 
 ### Files present in OpenNTPD 7.9p1 with NO Rust counterpart
 
@@ -387,9 +502,7 @@ No seccomp equivalent in the portable version.
 | `ntpd.c` | `daemon` module | ~5% | `-n` config check only; no event loop, clock discipline, drift file |
 | `parse.y` | `config::lexer` + `config::parser` | ~60% | Full grammar parsed but DNS/resolution not wired |
 
----
-
-## 19. Lexer divergence — deep syntax archaeology
+### 18. Lexer divergence — deep syntax archaeology
 
 | OpenNTPD behavior | Rust behavior | Impact |
 |-------------------|---------------|--------|
@@ -400,9 +513,7 @@ No seccomp equivalent in the portable version.
 | Comment NUL not special | NUL in comment returns `EmbeddedNul` error | **Intentional hardening** |
 | `allowed_in_string` may vary by platform | Fixed exclusion set: `(){}<>!=/#,` | Verified against Debian 7.9p1 |
 
----
-
-## 20. Parser divergence — grammar archaeology
+### 19. Parser divergence — grammar archaeology
 
 | OpenNTPD grammar | Rust parser | Status |
 |------------------|-------------|--------|
@@ -420,9 +531,7 @@ No seccomp equivalent in the portable version.
 | `-\<newline>123` → minus on line 1, `123` on line 2 | ⚠ `Symbol('-')` on line 1, `String("123")` on line 2 | Same result, different token type |
 | Valid config prints nothing to stdout | ⚠ Prints `configuration OK` to stderr | **Divergent** but harmless |
 
----
-
-## 21. NTP protocol gap — detailed surface audit
+### 20. NTP protocol gap — detailed surface audit
 
 | Protocol element | RFC | Status | Tests |
 |------------------|-----|--------|-------|
@@ -452,9 +561,7 @@ No seccomp equivalent in the portable version.
 | Symmetric active / passive | 5905 §8 | ✗ | 0 |
 | Kiss-o'-Death (KoD) packet | 5905 §13 | ✗ | 0 |
 
----
-
-## 22. Platform support matrix — Docker VM archaeology
+### 21. Platform support matrix — Docker VM archaeology
 
 | Distribution | `adjtimex` | `adjfreq(2)` | Socket API | Signal API | Status |
 |-------------|------------|---------------|------------|------------|--------|
@@ -466,9 +573,7 @@ No seccomp equivalent in the portable version.
 
 The Docker VM matrix (Debian, Ubuntu, Alpine, Fedora, FreeBSD) has been designed but **no cross-distro oracle tests have been executed**.
 
----
-
-## 23. `cargo xtask parity` — oracle harness state
+### 22. `cargo xtask parity` — oracle harness state
 
 | Capability | Status | Notes |
 |------------|--------|-------|
@@ -488,9 +593,7 @@ The Docker VM matrix (Debian, Ubuntu, Alpine, Fedora, FreeBSD) has been designed
 | Legacy receipts quarantined | ⚠ Pending | schema_version must become 2 |
 | Docker container support | ⚠ Not implemented | `--oracle-image` documented but absent |
 
----
-
-## 24. `getopt` CLI parity — complete gap table
+### 23. `getopt` CLI parity — complete gap table
 
 | `getopt` feature | OpenNTPD | Rust | Tested |
 |------------------|----------|------|--------|
@@ -515,9 +618,7 @@ The Docker VM matrix (Debian, Ubuntu, Alpine, Fedora, FreeBSD) has been designed
 | Unknown flag → exit 1 | ✓ | ✓ | ✓ |
 | Missing argument → exit 1 | ✓ | ✓ | ✓ |
 
----
-
-## 25. Config file behavior — detailed protocol
+### 24. Config file behavior — detailed protocol
 
 | Behavior | OpenNTPD | Rust | Divergence |
 |----------|----------|------|------------|
@@ -531,9 +632,7 @@ The Docker VM matrix (Debian, Ubuntu, Alpine, Fedora, FreeBSD) has been designed
 | Daemon mode (no `-n`) | Daemonize, run | Exit 78 (unimplemented) | Scaffold |
 | Error message format | `ntpd: <file>:<line>: <msg>` | `<start>:<end>: <msg>` (byte spans) | **Span vs line:column** |
 
----
-
-## 26. Security architecture gap — detailed
+### 25. Security architecture gap — detailed
 
 | Control | OpenNTPD | Rust | Risk |
 |---------|----------|------|------|
@@ -550,9 +649,7 @@ The Docker VM matrix (Debian, Ubuntu, Alpine, Fedora, FreeBSD) has been designed
 | `SOCK_CLOEXEC` | Applied | ✓ | ✓ |
 | `O_EXCL` / `O_NOFOLLOW` | Drift file | Not implemented | Medium |
 
----
-
-## 27. Evidence artifact status
+### 26. Evidence artifact status
 
 | Receipt | Location | Schema | Content |
 |---------|----------|--------|---------|
@@ -563,9 +660,7 @@ The Docker VM matrix (Debian, Ubuntu, Alpine, Fedora, FreeBSD) has been designed
 
 **Schema version 1 currently describes two incompatible receipt formats.** The old receipts should be quarantined and schema bumped to 2.
 
----
-
-## 28. Summary — total uncovered surface
+### 27. Summary — total uncovered surface
 
 | Category | Estimated coverage | Estimated remaining |
 |----------|-------------------|---------------------|
@@ -580,7 +675,6 @@ The Docker VM matrix (Debian, Ubuntu, Alpine, Fedora, FreeBSD) has been designed
 | DNS resolution | 0% | 100% |
 | Privilege separation | 0% | 100% |
 | Clock discipline | 0% | 100% |
-| imsg framework | 0% | 100% |
 | Event loop | 5% | 95% |
 | CLI flags | 75% | 25% |
 | Cross-platform support | 5% (Linux only) | 95% |
