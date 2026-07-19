@@ -82,6 +82,13 @@ impl<'a> Parser<'a> {
         loop {
             match self.peek().kind {
                 TokenKind::Newline | TokenKind::Eof => break,
+                // Lexer error: consume only the error token.  The lexer
+                // owns line recovery and next_token() already consumed
+                // the rest of this damaged line.
+                TokenKind::Error(_) => {
+                    self.advance();
+                    break;
+                }
                 _ => {
                     self.advance();
                 }
@@ -408,8 +415,14 @@ impl<'a> Parser<'a> {
             None
         })?;
 
-        let url_bytes = url_str.as_bytes();
-        if is_wildcard(url_bytes) || url_bytes.starts_with(b"https://*") {
+        let endpoint = parse_constraint_url(&url_str);
+
+        // Reject wildcard host (exactly "*", not "*foo" or similar).
+        let wildcard_host = match &endpoint.host {
+            HostNameOrIp::Name(name) => name.as_bytes() == b"*",
+            HostNameOrIp::Numeric(_) => false,
+        };
+        if wildcard_host {
             self.error(
                 alloc::format!("wildcard '*' is not valid for constraint URL"),
                 Some(url_span),
@@ -417,8 +430,6 @@ impl<'a> Parser<'a> {
             self.recover_to_newline();
             return None;
         }
-
-        let endpoint = parse_constraint_url(&url_str);
 
         let mut pinned = Vec::new();
         let mut pin_error = false;
@@ -1353,5 +1364,53 @@ mod tests {
         let r = parse(b"constraint from \"https://*\"\n");
         assert_one_error(&r);
         assert!(r.config.directives.is_empty());
+    }
+
+    #[test]
+    fn constraint_https_wildcard_with_path_rejected() {
+        let r = parse(b"constraint from \"https://*/path\"\n");
+        assert_one_error(&r);
+        assert!(r.config.directives.is_empty());
+    }
+
+    #[test]
+    fn constraint_https_wildcard_prefix_accepted() {
+        // "https://*foo/path" has host "*foo" which is NOT the wildcard.
+        let r = parse(b"constraint from \"https://*foo.example/path\"\n");
+        assert_valid(&r);
+    }
+
+    // -- Lexer error inside directive preserves next --
+    #[test]
+    fn lexer_error_in_server_option_preserves_next_directive() {
+        let r = parse(
+            b"server pool.ntp.org weight \0bad\n\
+              server time.example.com\n",
+        );
+        assert_eq!(r.config.directives.len(), 1);
+        assert!(matches!(r.config.directives[0].value, Directive::Server(_)));
+    }
+
+    #[test]
+    fn lexer_error_in_address_preserves_next_directive() {
+        let r = parse(
+            b"server \0bad\n\
+              query from 192.0.2.1\n",
+        );
+        assert_eq!(r.config.directives.len(), 1);
+        assert!(matches!(
+            r.config.directives[0].value,
+            Directive::QueryFrom(_)
+        ));
+    }
+
+    #[test]
+    fn lexer_error_after_parser_error_preserves_next_directive() {
+        let r = parse(
+            b"server pool.ntp.org nonsense \0bad\n\
+              sensor *\n",
+        );
+        assert_eq!(r.config.directives.len(), 1);
+        assert!(matches!(r.config.directives[0].value, Directive::Sensor(_)));
     }
 }
