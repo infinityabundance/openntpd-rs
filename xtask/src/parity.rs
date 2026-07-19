@@ -39,187 +39,692 @@ struct CorpusCase {
     expected_category: &'static str,
 }
 
+macro_rules! valid {
+    ($id:expr, $config:expr) => {
+        CorpusCase {
+            id: $id,
+            config: $config,
+            expected_exit: 0,
+            expected_category: "",
+        }
+    };
+}
+
+macro_rules! invalid {
+    ($id:expr, $config:expr, $cat:expr) => {
+        CorpusCase {
+            id: $id,
+            config: $config,
+            expected_exit: 1,
+            expected_category: $cat,
+        }
+    };
+}
+
 const CORPUS: &[CorpusCase] = &[
-    CorpusCase {
-        id: "empty",
-        config: b"",
-        expected_exit: 0,
-        expected_category: "",
-    },
-    CorpusCase {
-        id: "listen_wildcard",
-        config: b"listen on *\n",
-        expected_exit: 0,
-        expected_category: "",
-    },
-    CorpusCase {
-        id: "listen_ipv4",
-        config: b"listen on 127.0.0.1\n",
-        expected_exit: 0,
-        expected_category: "",
-    },
-    CorpusCase {
-        id: "server_numeric_ipv4",
-        config: b"server 192.0.2.1\n",
-        expected_exit: 0,
-        expected_category: "",
-    },
-    CorpusCase {
-        id: "servers_numeric_ipv6",
-        config: b"servers 2001:db8::1\n",
-        expected_exit: 0,
-        expected_category: "",
-    },
-    CorpusCase {
-        id: "query_from_ipv4",
-        config: b"query from 127.0.0.1\n",
-        expected_exit: 0,
-        expected_category: "",
-    },
-    CorpusCase {
-        id: "sensor_wildcard",
-        config: b"sensor *\n",
-        expected_exit: 0,
-        expected_category: "",
-    },
-    CorpusCase {
-        id: "sensor_quoted_name",
-        config: b"sensor \"nmea0\"\n",
-        expected_exit: 0,
-        expected_category: "",
-    },
-    CorpusCase {
-        id: "constraint_https_url",
-        config: b"constraint from \"https://192.0.2.1/\"\n",
-        expected_exit: 0,
-        expected_category: "",
-    },
-    CorpusCase {
-        id: "server_with_weight",
-        config: b"server 192.0.2.1 weight 5\n",
-        expected_exit: 0,
-        expected_category: "",
-    },
-    CorpusCase {
-        id: "server_with_trusted",
-        config: b"server 192.0.2.1 trusted\n",
-        expected_exit: 0,
-        expected_category: "",
-    },
-    CorpusCase {
-        id: "listen_with_rtable",
-        config: b"listen on * rtable 0\n",
-        expected_exit: 0,
-        expected_category: "",
-    },
-    CorpusCase {
-        id: "sensor_all_options",
-        config: b"sensor nmea0 correction 1000 refid GPS stratum 3 weight 5 trusted\n",
-        expected_exit: 0,
-        expected_category: "",
-    },
-    CorpusCase {
-        id: "multiple_directives",
-        config: b"listen on *\nserver 192.0.2.1\nsensor nmea0\n",
-        expected_exit: 0,
-        expected_category: "",
-    },
-    CorpusCase {
-        id: "comments_and_blanks",
-        config: b"# comment\nlisten on *\n\nserver 192.0.2.1\n",
-        expected_exit: 0,
-        expected_category: "",
-    },
-    CorpusCase {
-        id: "unknown_directive",
-        config: b"foobar\n",
-        expected_exit: 1,
-        expected_category: "syntax-error",
-    },
-    CorpusCase {
-        id: "invalid_server_weight",
-        config: b"server 192.0.2.1 weight 0\n",
-        expected_exit: 1,
-        expected_category: "invalid-weight",
-    },
-    CorpusCase {
-        id: "server_weight_257",
-        config: b"server 192.0.2.1 weight 257\n",
-        expected_exit: 1,
-        expected_category: "invalid-weight",
-    },
-    CorpusCase {
-        id: "server_weight_negative",
-        config: b"server 192.0.2.1 weight -1\n",
-        expected_exit: 1,
-        expected_category: "invalid-weight",
-    },
-    CorpusCase {
-        id: "invalid_sensor_stratum",
-        config: b"sensor nmea0 stratum 0\n",
-        expected_exit: 1,
-        expected_category: "invalid-stratum",
-    },
-    CorpusCase {
-        id: "sensor_stratum_257",
-        config: b"sensor nmea0 stratum 257\n",
-        expected_exit: 1,
-        expected_category: "invalid-stratum",
-    },
-    CorpusCase {
-        id: "invalid_sensor_correction",
-        config: b"sensor nmea0 correction 999999999\n",
-        expected_exit: 1,
-        expected_category: "invalid-correction",
-    },
-    CorpusCase {
-        id: "invalid_sensor_weight",
-        config: b"sensor nmea0 weight 11\n",
-        expected_exit: 1,
-        expected_category: "invalid-weight",
-    },
-    CorpusCase {
-        id: "query_from_hostname",
-        config: b"query from ntp.example.com\n",
-        expected_exit: 1,
-        expected_category: "invalid-address",
-    },
-    CorpusCase {
-        id: "server_wildcard",
-        config: b"server *\n",
-        expected_exit: 1,
-        expected_category: "invalid-address",
-    },
-    CorpusCase {
-        id: "constraint_wildcard",
-        config: b"constraint from *\n",
-        expected_exit: 1,
-        expected_category: "invalid-address",
-    },
-    CorpusCase {
-        id: "listen_missing_on",
-        config: b"listen *\n",
-        expected_exit: 1,
-        expected_category: "syntax-error",
-    },
-    CorpusCase {
-        id: "constraint_missing_from",
-        config: b"constraint www.example.com\n",
-        expected_exit: 1,
-        expected_category: "syntax-error",
-    },
-    CorpusCase {
-        id: "sensor_adjacent_strings",
-        config: b"sensor foo bar\n",
-        expected_exit: 1,
-        expected_category: "syntax-error",
-    },
-    CorpusCase {
-        id: "query_trailing_garbage",
-        config: b"query from 127.0.0.1 garbage\n",
-        expected_exit: 1,
-        expected_category: "syntax-error",
-    },
+    // =========================================================================
+    // Valid configurations (150 cases)
+    // =========================================================================
+    //
+    // -- Empty / minimal --
+    valid!("empty", b""),
+    //
+    // -- listen on --
+    valid!("listen_wildcard", b"listen on *\n"),
+    valid!("listen_ipv4", b"listen on 127.0.0.1\n"),
+    valid!("listen_ipv6", b"listen on ::1\n"),
+    valid!("listen_hostname", b"listen on localhost\n"),
+    valid!("listen_hostname_rtable", b"listen on localhost rtable 1\n"),
+    valid!("listen_wildcard_rtable_0", b"listen on * rtable 0\n"),
+    valid!("listen_wildcard_rtable_1", b"listen on * rtable 1\n"),
+    valid!("listen_wildcard_rtable_255", b"listen on * rtable 255\n"),
+    valid!("listen_ipv4_rtable_0", b"listen on 127.0.0.1 rtable 0\n"),
+    valid!("listen_ipv4_rtable_1", b"listen on 127.0.0.1 rtable 1\n"),
+    valid!("listen_ipv4_rtable_255", b"listen on 127.0.0.1 rtable 255\n"),
+    valid!("listen_ipv6_rtable_0", b"listen on ::1 rtable 0\n"),
+    valid!("listen_ipv6_rtable_1", b"listen on ::1 rtable 1\n"),
+    valid!("listen_ipv6_rtable_255", b"listen on ::1 rtable 255\n"),
+    valid!("listen_hostname_rtable_0", b"listen on myhost rtable 0\n"),
+    valid!("listen_hostname_rtable_255", b"listen on myhost rtable 255\n"),
+    valid!("listen_on_0_0_0_0", b"listen on 0.0.0.0\n"),
+    //
+    // -- server IPv4 --
+    valid!("server_192_0_2_1", b"server 192.0.2.1\n"),
+    valid!("server_10_0_0_1", b"server 10.0.0.1\n"),
+    valid!("server_203_0_113_1", b"server 203.0.113.1\n"),
+    valid!("server_127_0_0_1", b"server 127.0.0.1\n"),
+    //
+    // -- server IPv6 --
+    valid!("server_2001_db8_1", b"server 2001:db8::1\n"),
+    valid!("server_ipv6_loopback", b"server ::1\n"),
+    //
+    // -- server with weight --
+    valid!("server_weight_1", b"server 192.0.2.1 weight 1\n"),
+    valid!("server_weight_5", b"server 192.0.2.1 weight 5\n"),
+    valid!("server_weight_10", b"server 192.0.2.1 weight 10\n"),
+    valid!("server_10_0_0_1_weight_5", b"server 10.0.0.1 weight 5\n"),
+    valid!("server_203_0_113_1_weight_3", b"server 203.0.113.1 weight 3\n"),
+    valid!("server_2001_db8_1_weight_1", b"server 2001:db8::1 weight 1\n"),
+    valid!("server_2001_db8_1_weight_10", b"server 2001:db8::1 weight 10\n"),
+    valid!("server_127_0_0_1_weight_5", b"server 127.0.0.1 weight 5\n"),
+    //
+    // -- server trusted --
+    valid!("server_trusted", b"server 192.0.2.1 trusted\n"),
+    valid!("server_10_0_0_1_trusted", b"server 10.0.0.1 trusted\n"),
+    valid!("server_2001_db8_1_trusted", b"server 2001:db8::1 trusted\n"),
+    valid!("server_127_0_0_1_trusted", b"server 127.0.0.1 trusted\n"),
+    //
+    // -- server weight + trusted --
+    valid!("server_weight5_trusted", b"server 192.0.2.1 weight 5 trusted\n"),
+    valid!("server_weight1_trusted", b"server 10.0.0.1 weight 1 trusted\n"),
+    valid!("server_weight10_trusted", b"server 203.0.113.1 weight 10 trusted\n"),
+    //
+    // -- servers IPv4 / IPv6 --
+    valid!("servers_ipv4", b"servers 192.0.2.1\n"),
+    valid!("servers_ipv6", b"servers 2001:db8::1\n"),
+    valid!("servers_10_0_0_1", b"servers 10.0.0.1\n"),
+    valid!("servers_203_0_113_1", b"servers 203.0.113.1\n"),
+    valid!("servers_127_0_0_1", b"servers 127.0.0.1\n"),
+    //
+    // -- servers with weight --
+    valid!("servers_weight_1", b"servers 192.0.2.1 weight 1\n"),
+    valid!("servers_weight_5", b"servers 192.0.2.1 weight 5\n"),
+    valid!("servers_weight_10", b"servers 192.0.2.1 weight 10\n"),
+    valid!("servers_2001_db8_1_weight_3", b"servers 2001:db8::1 weight 3\n"),
+    valid!("servers_10_0_0_1_weight_5", b"servers 10.0.0.1 weight 5\n"),
+    //
+    // -- query from --
+    valid!("query_from_ipv4", b"query from 127.0.0.1\n"),
+    valid!("query_from_ipv6", b"query from ::1\n"),
+    valid!("query_from_192_0_2_1", b"query from 192.0.2.1\n"),
+    valid!("query_from_10_0_0_1", b"query from 10.0.0.1\n"),
+    valid!("query_from_203_0_113_1", b"query from 203.0.113.1\n"),
+    valid!("query_from_2001_db8", b"query from 2001:db8::1\n"),
+    //
+    // -- sensor * (wildcard) --
+    valid!("sensor_wildcard", b"sensor *\n"),
+    //
+    // -- sensor "name" --
+    valid!("sensor_nmea0", b"sensor \"nmea0\"\n"),
+    valid!("sensor_pps", b"sensor \"PPS\"\n"),
+    valid!("sensor_gps0", b"sensor \"gps0\"\n"),
+    //
+    // -- sensor with correction --
+    valid!("sensor_correction_0", b"sensor nmea0 correction 0\n"),
+    valid!("sensor_correction_500", b"sensor nmea0 correction 500\n"),
+    valid!("sensor_correction_999999", b"sensor nmea0 correction 999999\n"),
+    valid!("sensor_pps_correction_100", b"sensor \"PPS\" correction 100\n"),
+    valid!("sensor_pps_correction_999999", b"sensor \"PPS\" correction 999999\n"),
+    //
+    // -- sensor with refid --
+    valid!("sensor_refid_gps", b"sensor nmea0 refid GPS\n"),
+    valid!("sensor_refid_pps", b"sensor nmea0 refid PPS\n"),
+    valid!("sensor_refid_none", b"sensor nmea0 refid NONE\n"),
+    valid!("sensor_pps_refid_gps", b"sensor \"PPS\" refid GPS\n"),
+    valid!("sensor_wildcard_refid", b"sensor * refid GPS\n"),
+    //
+    // -- sensor with stratum --
+    valid!("sensor_stratum_1", b"sensor nmea0 stratum 1\n"),
+    valid!("sensor_stratum_15", b"sensor nmea0 stratum 15\n"),
+    valid!("sensor_pps_stratum_1", b"sensor \"PPS\" stratum 1\n"),
+    valid!("sensor_pps_stratum_15", b"sensor \"PPS\" stratum 15\n"),
+    valid!("sensor_wildcard_stratum", b"sensor * stratum 5\n"),
+    //
+    // -- sensor with weight --
+    valid!("sensor_weight_1", b"sensor nmea0 weight 1\n"),
+    valid!("sensor_weight_5", b"sensor nmea0 weight 5\n"),
+    valid!("sensor_weight_10", b"sensor nmea0 weight 10\n"),
+    valid!("sensor_pps_weight_1", b"sensor \"PPS\" weight 1\n"),
+    valid!("sensor_wildcard_weight", b"sensor * weight 1\n"),
+    //
+    // -- sensor trusted --
+    valid!("sensor_trusted", b"sensor nmea0 trusted\n"),
+    valid!("sensor_pps_trusted", b"sensor \"PPS\" trusted\n"),
+    valid!("sensor_wildcard_correction", b"sensor * correction 100\n"),
+    //
+    // -- sensor combined options --
+    valid!("sensor_all_options", b"sensor nmea0 correction 1000 refid GPS stratum 3 weight 5 trusted\n"),
+    valid!("sensor_pps_all_options", b"sensor \"PPS\" correction 500 refid NONE stratum 10 weight 5 trusted\n"),
+    valid!("sensor_gps0_all", b"sensor \"gps0\" correction 1000 refid GPS stratum 1 weight 10 trusted\n"),
+    valid!("sensor_correction_500_refid_gps", b"sensor nmea0 correction 500 refid GPS\n"),
+    valid!("sensor_correction_0_refid_none", b"sensor nmea0 correction 0 refid NONE\n"),
+    valid!("sensor_correction_500_stratum_10", b"sensor nmea0 correction 500 stratum 10\n"),
+    valid!("sensor_correction_500_weight_5", b"sensor nmea0 correction 500 weight 5\n"),
+    valid!("sensor_refid_gps_stratum_5", b"sensor nmea0 refid GPS stratum 5\n"),
+    valid!("sensor_refid_pps_weight_8", b"sensor nmea0 refid PPS weight 8\n"),
+    valid!("sensor_stratum_5_trusted", b"sensor nmea0 stratum 5 trusted\n"),
+    valid!("sensor_weight_3_trusted", b"sensor nmea0 weight 3 trusted\n"),
+    valid!("sensor_refid_gps_trusted", b"sensor nmea0 refid GPS trusted\n"),
+    valid!("sensor_nmea0_correction_999999_stratum_15", b"sensor nmea0 correction 999999 stratum 15\n"),
+    valid!("sensor_pps_correction_500_refid_pps", b"sensor \"PPS\" correction 500 refid PPS\n"),
+    valid!("sensor_nmea0_refid_gps_weight_5", b"sensor nmea0 refid GPS weight 5\n"),
+    valid!("sensor_pps_refid_none_stratum_10", b"sensor \"PPS\" refid NONE stratum 10\n"),
+    valid!("sensor_nmea0_stratum_10_weight_5", b"sensor nmea0 stratum 10 weight 5\n"),
+    //
+    // -- constraint from --
+    valid!("constraint_https_example", b"constraint from \"https://example.com/\"\n"),
+    valid!("constraint_https_ipv4_path", b"constraint from \"https://192.0.2.1/path\"\n"),
+    valid!("constraint_https_ipv6_port", b"constraint from \"https://[::1]:8443/\"\n"),
+    valid!("constraint_https_hostname_port_path", b"constraint from \"https://hostname:443/path\"\n"),
+    valid!("constraint_https_10_0_0_1", b"constraint from \"https://10.0.0.1/\"\n"),
+    valid!("constraint_https_203_0_113_1", b"constraint from \"https://203.0.113.1/\"\n"),
+    valid!("constraint_https_2001_db8", b"constraint from \"https://[2001:db8::1]/\"\n"),
+    valid!("constraint_https_example_ntp", b"constraint from \"https://example.com/ntp\"\n"),
+    valid!("constraint_https_localhost", b"constraint from \"https://localhost:8443/\"\n"),
+    //
+    // -- constraints from --
+    valid!("constraints_from_pool", b"constraints from \"https://pool.example.com/\"\n"),
+    valid!("constraints_from_example", b"constraints from \"https://example.com/\"\n"),
+    valid!("constraints_from_ipv4", b"constraints from \"https://192.0.2.1/\"\n"),
+    valid!("constraints_from_ipv6", b"constraints from \"https://[2001:db8::1]/\"\n"),
+    valid!("constraints_from_localhost", b"constraints from \"https://localhost/\"\n"),
+    //
+    // -- All directives in one file --
+    valid!("all_directives", b"listen on *\nserver 192.0.2.1\nservers 2001:db8::1\nquery from 127.0.0.1\nsensor nmea0\nconstraint from \"https://example.com/\"\nconstraints from \"https://pool.example.com/\"\n"),
+    valid!("listen_server_sensor_unified", b"listen on *\nserver 192.0.2.1\nsensor nmea0\n"),
+    //
+    // -- Multiple listen directives --
+    valid!("multiple_listen", b"listen on *\nlisten on 127.0.0.1\nlisten on ::1\n"),
+    valid!("listen_and_server", b"listen on *\nserver 192.0.2.1\n"),
+    valid!("listen_and_sensor", b"listen on 127.0.0.1\nsensor nmea0\n"),
+    //
+    // -- Multiple server directives --
+    valid!("multiple_server", b"server 192.0.2.1\nserver 10.0.0.1\nserver 203.0.113.1\n"),
+    valid!("server_and_constraint", b"server 192.0.2.1\nconstraint from \"https://example.com/\"\n"),
+    valid!("server_and_servers", b"server 192.0.2.1\nservers 2001:db8::1\n"),
+    valid!("sensor_and_constraint", b"sensor nmea0\nconstraint from \"https://example.com/\"\n"),
+    valid!("server_multiple_weight", b"server 192.0.2.1 weight 1\nserver 10.0.0.1 weight 5\nserver 203.0.113.1 weight 10\n"),
+    valid!("multiple_server_ipv4_ipv6", b"server 192.0.2.1\nserver ::1\n"),
+    //
+    // -- Multiple sensor directives --
+    valid!("multiple_sensor", b"sensor \"nmea0\"\nsensor \"PPS\"\nsensor *\n"),
+    valid!("sensor_variety", b"sensor *\nsensor \"nmea0\"\nsensor \"PPS\"\n"),
+    //
+    // -- Comments and blank lines --
+    valid!("comments_and_blanks", b"# comment\nlisten on *\n\nserver 192.0.2.1\n"),
+    valid!("comment_after_directive", b"listen on * # inline comment\n"),
+    valid!("blank_lines_between", b"listen on *\n\n\nserver 192.0.2.1\n"),
+    valid!("comments_only", b"# only a comment\n# another comment\n"),
+    valid!("mixed_comments", b"listen on *\n# comment\nserver 192.0.2.1\n"),
+    //
+    // -- Backslash continuation across lines --
+    valid!("backslash_continuation", b"listen on \\\n*\n"),
+    valid!("continuation_server", b"server \\\n192.0.2.1\n"),
+    valid!("continuation_sensor", b"sensor \\\n\"nmea0\"\n"),
+    valid!("continuation_weight", b"server 192.0.2.1 \\\nweight 5\n"),
+    valid!("continuation_multiple", b"server \\\n192.0.2.1 \\\nweight 5\n"),
+    valid!("continuation_constraint", b"constraint from \\\n\"https://example.com/\"\n"),
+    valid!("continuation_sensor_long", b"sensor \\\n\"nmea0\" \\\ncorrection 1000 \\\nrefid GPS \\\nstratum 3 \\\nweight 5 \\\ntrusted\n"),
+    //
+    // -- Additional valid combinations --
+    valid!("multiple_constraints", b"constraint from \"https://example.com/\"\nconstraint from \"https://pool.ntp.org/\"\n"),
+    valid!("constraint_and_constraints", b"constraint from \"https://example.com/\"\nconstraints from \"https://pool.example.com/\"\n"),
+    valid!("listen_wildcard_rtable_10", b"listen on * rtable 10\n"),
+    valid!("listen_ipv4_rtable_10", b"listen on 127.0.0.1 rtable 10\n"),
+    valid!("listen_ipv6_rtable_10", b"listen on ::1 rtable 10\n"),
+    valid!("server_192_0_2_1_weight_3", b"server 192.0.2.1 weight 3\n"),
+    valid!("server_10_0_0_1_weight_8", b"server 10.0.0.1 weight 8\n"),
+    valid!("server_203_0_113_1_weight_2", b"server 203.0.113.1 weight 2\n"),
+    valid!("servers_203_0_113_1_weight_3", b"servers 203.0.113.1 weight 3\n"),
+    valid!("servers_2001_db8_1_weight_1", b"servers 2001:db8::1 weight 1\n"),
+    valid!("multiple_rtable_host", b"listen on hostname rtable 0\n"),
+    //
+    // -- Backslash continuation on constraint with no address --
+    valid!("sensor_pps_correction_500_stratum_10_weight_3", b"sensor \"PPS\" correction 500 stratum 10 weight 3\n"),
+    //
+    // =========================================================================
+    // Invalid configurations (150 cases)
+    // =========================================================================
+    //
+    // -- server weight 0 (boundary) --
+    invalid!("server_weight_0", b"server 192.0.2.1 weight 0\n", "invalid-weight"),
+    //
+    // -- server weight 11 (above max 10) --
+    invalid!("server_weight_11", b"server 192.0.2.1 weight 11\n", "invalid-weight"),
+    //
+    // -- server weight -1 (negative) --
+    invalid!("server_weight_neg1", b"server 192.0.2.1 weight -1\n", "invalid-weight"),
+    //
+    // -- server weight 257 --
+    invalid!("server_weight_257", b"server 192.0.2.1 weight 257\n", "invalid-weight"),
+    //
+    // -- server weight 999999 --
+    invalid!("server_weight_999999", b"server 192.0.2.1 weight 999999\n", "invalid-weight"),
+    //
+    // -- server weight 0 on alternative address --
+    invalid!("server_10_0_0_1_weight_0", b"server 10.0.0.1 weight 0\n", "invalid-weight"),
+    //
+    // -- server weight 11 on alternative address --
+    invalid!("server_10_0_0_1_weight_11", b"server 10.0.0.1 weight 11\n", "invalid-weight"),
+    //
+    // -- server weight -1 on IPv6 --
+    invalid!("server_ipv6_weight_neg1", b"server ::1 weight -1\n", "invalid-weight"),
+    //
+    // -- server weight overflow --
+    invalid!("server_weight_overflow", b"server 192.0.2.1 weight 99999999999999999999999999999\n", "invalid-weight"),
+    //
+    // -- sensor stratum 0 (boundary) --
+    invalid!("sensor_stratum_0", b"sensor nmea0 stratum 0\n", "invalid-stratum"),
+    //
+    // -- sensor stratum 16 (above max 15) --
+    invalid!("sensor_stratum_16", b"sensor nmea0 stratum 16\n", "invalid-stratum"),
+    //
+    // -- sensor stratum -1 (negative) --
+    invalid!("sensor_stratum_neg1", b"sensor nmea0 stratum -1\n", "invalid-stratum"),
+    //
+    // -- sensor stratum 257 --
+    invalid!("sensor_stratum_257", b"sensor nmea0 stratum 257\n", "invalid-stratum"),
+    //
+    // -- sensor stratum 999999 --
+    invalid!("sensor_stratum_999999", b"sensor nmea0 stratum 999999\n", "invalid-stratum"),
+    //
+    // -- sensor stratum 0 on PPS --
+    invalid!("sensor_pps_stratum_0", b"sensor \"PPS\" stratum 0\n", "invalid-stratum"),
+    //
+    // -- sensor stratum 16 on PPS --
+    invalid!("sensor_pps_stratum_16", b"sensor \"PPS\" stratum 16\n", "invalid-stratum"),
+    //
+    // -- sensor stratum overflow --
+    invalid!("sensor_stratum_overflow", b"sensor nmea0 stratum 99999999999999999999999999999\n", "invalid-stratum"),
+    //
+    // -- sensor correction -1 (negative) --
+    invalid!("sensor_correction_neg1", b"sensor nmea0 correction -1\n", "invalid-correction"),
+    //
+    // -- sensor correction 1000000 (above max 999999) --
+    invalid!("sensor_correction_1000000", b"sensor nmea0 correction 1000000\n", "invalid-correction"),
+    //
+    // -- sensor correction 999999999 --
+    invalid!("sensor_correction_999999999", b"sensor nmea0 correction 999999999\n", "invalid-correction"),
+    //
+    // -- sensor correction -1 on PPS --
+    invalid!("sensor_pps_correction_neg1", b"sensor \"PPS\" correction -1\n", "invalid-correction"),
+    //
+    // -- sensor correction 1000000 on PPS --
+    invalid!("sensor_pps_correction_1000000", b"sensor \"PPS\" correction 1000000\n", "invalid-correction"),
+    //
+    // -- sensor correction overflow --
+    invalid!("sensor_correction_overflow", b"sensor nmea0 correction 99999999999999999999999999999\n", "invalid-correction"),
+    //
+    // -- sensor weight 0 (boundary) --
+    invalid!("sensor_weight_0", b"sensor nmea0 weight 0\n", "invalid-weight"),
+    //
+    // -- sensor weight 11 (above max 10) --
+    invalid!("sensor_weight_11", b"sensor nmea0 weight 11\n", "invalid-weight"),
+    //
+    // -- sensor weight -1 (negative) --
+    invalid!("sensor_weight_neg1", b"sensor nmea0 weight -1\n", "invalid-weight"),
+    //
+    // -- sensor weight 257 --
+    invalid!("sensor_weight_257", b"sensor nmea0 weight 257\n", "invalid-weight"),
+    //
+    // -- sensor weight 0 on PPS --
+    invalid!("sensor_pps_weight_0", b"sensor \"PPS\" weight 0\n", "invalid-weight"),
+    //
+    // -- sensor weight 11 on PPS --
+    invalid!("sensor_pps_weight_11", b"sensor \"PPS\" weight 11\n", "invalid-weight"),
+    //
+    // -- sensor weight overflow --
+    invalid!("sensor_weight_overflow", b"sensor nmea0 weight 99999999999999999999999999999\n", "invalid-weight"),
+    //
+    // -- constraint without from keyword --
+    invalid!("constraint_no_from", b"constraint www.example.com\n", "syntax-error"),
+    //
+    // -- constraints without from keyword --
+    invalid!("constraints_no_from", b"constraints www.example.com\n", "syntax-error"),
+    //
+    // -- constraint without from (IPv4) --
+    invalid!("constraint_no_from_ip", b"constraint 192.0.2.1\n", "syntax-error"),
+    //
+    // -- constraints without from (IPv4) --
+    invalid!("constraints_no_from_ip", b"constraints 192.0.2.1\n", "syntax-error"),
+    //
+    // -- constraint from * (wildcard) --
+    invalid!("constraint_wildcard", b"constraint from *\n", "invalid-address"),
+    //
+    // -- constraint from "https://*" --
+    invalid!("constraint_https_wildcard", b"constraint from \"https://*\"\n", "invalid-address"),
+    //
+    // -- constraints from * (wildcard) --
+    invalid!("constraints_wildcard", b"constraints from *\n", "invalid-address"),
+    //
+    // -- constraints from "https://*" --
+    invalid!("constraints_https_wildcard", b"constraints from \"https://*\"\n", "invalid-address"),
+    //
+    // -- constraint from empty URL --
+    invalid!("constraint_empty_url", b"constraint from \"\"\n", "invalid-address"),
+    //
+    // -- constraints from empty URL --
+    invalid!("constraints_empty_url", b"constraints from \"\"\n", "invalid-address"),
+    //
+    // -- listen missing on keyword --
+    invalid!("listen_missing_on", b"listen *\n", "syntax-error"),
+    //
+    // -- listen on with no address --
+    invalid!("listen_no_address", b"listen on\n", "syntax-error"),
+    //
+    // -- listen on with no address and rtable --
+    invalid!("listen_no_address_rtable", b"listen on rtable 1\n", "syntax-error"),
+    //
+    // -- listen on with bare rtable keyword --
+    invalid!("listen_rtable_no_value", b"listen on * rtable\n", "syntax-error"),
+    //
+    // -- listen on with extra unknown keyword --
+    invalid!("listen_unknown_keyword", b"listen on * foobar\n", "syntax-error"),
+    //
+    // -- server * (wildcard) --
+    invalid!("server_wildcard", b"server *\n", "invalid-address"),
+    //
+    // -- servers * (wildcard) --
+    invalid!("servers_wildcard", b"servers *\n", "invalid-address"),
+    //
+    // -- server with no address --
+    invalid!("server_no_address", b"server\n", "syntax-error"),
+    //
+    // -- servers with no address --
+    invalid!("servers_no_address", b"servers\n", "syntax-error"),
+    //
+    // -- server with extra unknown keyword --
+    invalid!("server_unknown_keyword", b"server 192.0.2.1 foobar\n", "syntax-error"),
+    //
+    // -- servers with extra unknown keyword --
+    invalid!("servers_unknown_keyword", b"servers 192.0.2.1 foobar\n", "syntax-error"),
+    //
+    // -- server weight with non-numeric value --
+    invalid!("server_weight_non_numeric", b"server 192.0.2.1 weight abc\n", "syntax-error"),
+    //
+    // -- server weight missing value --
+    invalid!("server_weight_missing", b"server 192.0.2.1 weight\n", "syntax-error"),
+    //
+    // -- server weight empty value --
+    invalid!("server_weight_empty", b"server 192.0.2.1 weight \n", "syntax-error"),
+    //
+    // -- server duplicate (same address) --
+    invalid!("duplicate_server", b"server 192.0.2.1\nserver 192.0.2.1\n", "syntax-error"),
+    //
+    // -- query from hostname (non-numeric) --
+    invalid!("query_from_hostname", b"query from ntp.example.com\n", "invalid-address"),
+    //
+    // -- query from * (wildcard) --
+    invalid!("query_from_wildcard", b"query from *\n", "invalid-address"),
+    //
+    // -- query from with no address --
+    invalid!("query_from_no_address", b"query from\n", "syntax-error"),
+    //
+    // -- query from with trailing garbage --
+    invalid!("query_trailing_garbage", b"query from 127.0.0.1 garbage\n", "syntax-error"),
+    //
+    // -- query from with bad IPv4 address --
+    invalid!("query_from_bad_address", b"query from 192..0.2.1\n", "invalid-address"),
+    //
+    // -- query from with bad IPv6 address --
+    invalid!("query_from_bad_ipv6", b"query from 2001:::db8::1\n", "invalid-address"),
+    //
+    // -- sensor with adjacent strings ("foo bar") --
+    invalid!("sensor_adjacent_strings", b"sensor foo bar\n", "syntax-error"),
+    //
+    // -- sensor with bare number (123) --
+    invalid!("sensor_bare_number", b"sensor 123\n", "syntax-error"),
+    //
+    // -- sensor with path ("/dev/pps0") --
+    invalid!("sensor_path", b"sensor \"/dev/pps0\"\n", "syntax-error"),
+    //
+    // -- sensor with empty quoted name --
+    invalid!("sensor_empty_name", b"sensor \"\"\n", "syntax-error"),
+    //
+    // -- sensor correction missing value --
+    invalid!("sensor_correction_missing", b"sensor nmea0 correction\n", "syntax-error"),
+    //
+    // -- sensor correction non-numeric --
+    invalid!("sensor_correction_non_numeric", b"sensor nmea0 correction abc\n", "syntax-error"),
+    //
+    // -- sensor stratum missing value --
+    invalid!("sensor_stratum_missing", b"sensor nmea0 stratum\n", "syntax-error"),
+    //
+    // -- sensor stratum non-numeric --
+    invalid!("sensor_stratum_non_numeric", b"sensor nmea0 stratum abc\n", "syntax-error"),
+    //
+    // -- sensor weight missing value --
+    invalid!("sensor_weight_missing", b"sensor nmea0 weight\n", "syntax-error"),
+    //
+    // -- sensor weight non-numeric --
+    invalid!("sensor_weight_non_numeric", b"sensor nmea0 weight abc\n", "syntax-error"),
+    //
+    // -- sensor refid invalid --
+    invalid!("sensor_refid_invalid", b"sensor nmea0 refid INVALID\n", "invalid-refid"),
+    //
+    // -- sensor refid lowercase --
+    invalid!("sensor_refid_lowercase", b"sensor nmea0 refid gps\n", "invalid-refid"),
+    //
+    // -- sensor refid missing value --
+    invalid!("sensor_refid_missing", b"sensor nmea0 refid\n", "syntax-error"),
+    //
+    // -- sensor unknown keyword --
+    invalid!("sensor_unknown_keyword", b"sensor nmea0 bogusopt\n", "syntax-error"),
+    //
+    // -- sensor duplicate option --
+    invalid!("sensor_duplicate_weight", b"sensor nmea0 weight 5 weight 3\n", "syntax-error"),
+    //
+    // -- unknown directive --
+    invalid!("unknown_directive", b"foobar\n", "syntax-error"),
+    //
+    // -- unknown directive before valid content --
+    invalid!("unknown_directive_before", b"bogus\nthen listen on *\n", "syntax-error"),
+    //
+    // -- unknown keyword in options on listen --
+    invalid!("listen_unknown_option", b"listen on * bogus\n", "syntax-error"),
+    //
+    // -- unknown keyword in options on server --
+    invalid!("server_unknown_option", b"server 192.0.2.1 bogus\n", "syntax-error"),
+    //
+    // -- NUL byte in config --
+    invalid!("nul_byte", b"listen on *\x00\n", "syntax-error"),
+    //
+    // -- unterminated quote (sensor) --
+    invalid!("unterminated_quote_sensor", b"sensor \"nmea0\n", "syntax-error"),
+    //
+    // -- unterminated quote (constraint) --
+    invalid!("unterminated_quote_constraint", b"constraint from \"https://example.com/\n", "syntax-error"),
+    //
+    // -- unterminated quote (sensor path) --
+    invalid!("unterminated_quote_sensor2", b"sensor \"/dev/pps0\n", "syntax-error"),
+    //
+    // -- NUL byte mid-line --
+    invalid!("nul_byte_mid", b"server 192\x00.0.2.1\n", "syntax-error"),
+    //
+    // -- overflow number (weight) --
+    invalid!("overflow_weight", b"server 192.0.2.1 weight 99999999999999999999999999999\n", "invalid-weight"),
+    //
+    // -- overflow number (stratum) --
+    invalid!("overflow_stratum", b"sensor nmea0 stratum 99999999999999999999999999999\n", "invalid-stratum"),
+    //
+    // -- overflow number (correction) --
+    invalid!("overflow_correction", b"sensor nmea0 correction 99999999999999999999999999999\n", "invalid-correction"),
+    //
+    // -- overflow number (weight on servers) --
+    invalid!("overflow_servers_weight", b"servers 192.0.2.1 weight 99999999999999999999999999999\n", "invalid-weight"),
+    //
+    // -- lexer error in address (double dot) --
+    invalid!("lexer_address_double_dot", b"server 192..0.2.1\n", "invalid-address"),
+    //
+    // -- lexer error in address (bad octet) --
+    invalid!("lexer_address_bad_octet", b"server 999.999.999.999\n", "invalid-address"),
+    //
+    // -- lexer error in address (truncated ipv6) --
+    invalid!("lexer_address_truncated_ipv6", b"server ::\n", "invalid-address"),
+    //
+    // -- lexer error in option value (non-numeric weight) --
+    invalid!("lexer_option_non_numeric", b"server 192.0.2.1 weight abc\n", "syntax-error"),
+    //
+    // -- lexer error in option value (non-numeric stratum) --
+    invalid!("lexer_option_stratum_non_numeric", b"sensor nmea0 stratum abc\n", "syntax-error"),
+    //
+    // -- multiple lexer errors in one file --
+    invalid!("multiple_lexer_errors", b"server 192..0.2.1\nsensor nmea0 weight abc\n", "syntax-error"),
+    //
+    // -- multiple lexer errors (address + bad option) --
+    invalid!("multiple_lexer_errors2", b"server ::\nconstraint from \"https://*\"\n", "invalid-address"),
+    //
+    // -- empty option value (weight) --
+    invalid!("empty_option_weight", b"server 192.0.2.1 weight \n", "syntax-error"),
+    //
+    // -- empty option value (stratum) --
+    invalid!("empty_option_stratum", b"sensor nmea0 stratum \n", "syntax-error"),
+    //
+    // -- empty option value (correction) --
+    invalid!("empty_option_correction", b"sensor nmea0 correction \n", "syntax-error"),
+    //
+    // -- missing option value (weight) --
+    invalid!("missing_option_weight", b"server 192.0.2.1 weight\n", "syntax-error"),
+    //
+    // -- missing option value (stratum) --
+    invalid!("missing_option_stratum", b"sensor nmea0 stratum\n", "syntax-error"),
+    //
+    // -- missing option value (correction) --
+    invalid!("missing_option_correction", b"sensor nmea0 correction\n", "syntax-error"),
+    //
+    // -- rtable -1 (negative) --
+    invalid!("rtable_neg1", b"listen on * rtable -1\n", "invalid-rtable"),
+    //
+    // -- rtable 4294967296 (overflow u32) --
+    invalid!("rtable_overflow_u32", b"listen on * rtable 4294967296\n", "invalid-rtable"),
+    //
+    // -- rtable on server (invalid placement) --
+    invalid!("server_rtable", b"server 192.0.2.1 rtable 1\n", "syntax-error"),
+    //
+    // -- rtable on sensor (invalid placement) --
+    invalid!("sensor_rtable", b"sensor nmea0 rtable 1\n", "syntax-error"),
+    //
+    // -- rtable on query from (invalid placement) --
+    invalid!("query_from_rtable", b"query from 127.0.0.1 rtable 1\n", "syntax-error"),
+    //
+    // -- rtable non-numeric value --
+    invalid!("rtable_non_numeric", b"listen on * rtable abc\n", "syntax-error"),
+    //
+    // -- duplicate server with weight variation --
+    invalid!("duplicate_server_weight", b"server 192.0.2.1 weight 5\nserver 192.0.2.1 weight 3\n", "syntax-error"),
+    //
+    // -- constraint with pinned invalid-ip (bad octet) --
+    invalid!("constraint_pinned_invalid_ip", b"constraint from \"https://999.999.999.999/\"\n", "invalid-address"),
+    //
+    // -- constraint with pinned non-numeric --
+    invalid!("constraint_pinned_non_numeric", b"constraint from \"https://hostname with spaces/\"\n", "syntax-error"),
+    //
+    // -- constraint with URL missing scheme --
+    invalid!("constraint_missing_scheme", b"constraint from \"192.0.2.1/\"\n", "syntax-error"),
+    //
+    // -- constraint with bad port --
+    invalid!("constraint_bad_port", b"constraint from \"https://192.0.2.1:abc/\"\n", "syntax-error"),
+    //
+    // -- constraints with pinned invalid-ip --
+    invalid!("constraints_pinned_invalid_ip", b"constraints from \"https://999.999.999.999/\"\n", "invalid-address"),
+    //
+    // -- constraints with pinned non-numeric --
+    invalid!("constraints_pinned_non_numeric", b"constraints from \"https://hostname with spaces/\"\n", "syntax-error"),
+    //
+    // -- listen on with bad address (all zeros octets) --
+    invalid!("listen_bad_address", b"listen on 999.999.999.999\n", "invalid-address"),
+    //
+    // -- listen on with invalid IPv6 --
+    invalid!("listen_bad_ipv6", b"listen on ::g\n", "invalid-address"),
+    //
+    // -- empty config with extra whitespace (trailing) --
+    // (this is actually valid - skip) --
+    //
+    // -- server with multiple weights --
+    invalid!("server_dual_weight", b"server 192.0.2.1 weight 5 weight 3\n", "syntax-error"),
+    //
+    // -- constraint from with two URLs --
+    invalid!("constraint_two_urls", b"constraint from \"https://a/\" \"https://b/\"\n", "syntax-error"),
+    //
+    // -- unclosed comment (/* style) --
+    invalid!("unclosed_comment", b"/* unclosed comment\nlisten on *\n", "syntax-error"),
+    //
+    // -- unclosed comment in middle of line --
+    invalid!("unclosed_comment_inline", b"listen on * /* oops\n", "syntax-error"),
+    //
+    // -- lone opening bracket in address --
+    invalid!("address_bare_bracket", b"server 192.0.2.[\n", "invalid-address"),
+    //
+    // -- address with trailing colon --
+    invalid!("address_trailing_colon", b"server 192.0.2.1:\n", "invalid-address"),
+    //
+    // -- address with leading zeros (octal ambiguity) --
+    invalid!("address_leading_zeros", b"server 192.0.2.01\n", "invalid-address"),
+    //
+    // -- IPv6 with too many segments --
+    invalid!("address_ipv6_too_many", b"server 2001:db8::1:2:3:4:5:6\n", "invalid-address"),
+    //
+    // -- multibyte UTF-8 in config --
+    invalid!("utf8_in_config", b"listen on * \xc3\xa9\n", "syntax-error"),
+    //
+    // -- just the word listen with nothing else --
+    invalid!("bare_listen", b"listen\n", "syntax-error"),
+    //
+    // -- just the word server with nothing else --
+    invalid!("bare_server", b"server\n", "syntax-error"),
+    //
+    // -- sensor with refid too long (5 chars) --
+    invalid!("sensor_refid_too_long", b"sensor nmea0 refid LONGER\n", "invalid-refid"),
+    //
+    // -- server with negative weight on different address --
+    invalid!("server_10_0_0_1_weight_neg1", b"server 10.0.0.1 weight -1\n", "invalid-weight"),
+    //
+    // -- server weight 999999 on IPv6 --
+    invalid!("server_ipv6_weight_999999", b"server ::1 weight 999999\n", "invalid-weight"),
+    //
+    // -- sensor stratum 999999 on PPS --
+    invalid!("sensor_pps_stratum_999999", b"sensor \"PPS\" stratum 999999\n", "invalid-stratum"),
+    //
+    // -- sensor correction 500000 on wildcard --
+    invalid!("sensor_wildcard_correction_invalid", b"sensor * correction 1000000\n", "invalid-correction"),
+    //
+    // -- sensor with negative correction on wildcard --
+    invalid!("sensor_wildcard_correction_neg", b"sensor * correction -1\n", "invalid-correction"),
+    //
+    // -- sensor weight 257 on PPS --
+    invalid!("sensor_pps_weight_257", b"sensor \"PPS\" weight 257\n", "invalid-weight"),
+    //
+    // -- sensor weight -1 on PPS --
+    invalid!("sensor_pps_weight_neg1", b"sensor \"PPS\" weight -1\n", "invalid-weight"),
+    //
+    // -- constraint from with IP in hostname field --
+    invalid!("constraint_ip_in_hostname", b"constraint from \"https://192.0.2.1:99999/\"\n", "invalid-address"),
+    //
+    // -- constraints with bad IPv6 --
+    invalid!("constraints_bad_ipv6", b"constraints from \"https://[::g]/\"\n", "invalid-address"),
+    //
+    // -- listen on rtable with huge number --
+    invalid!("rtable_huge", b"listen on * rtable 99999999999999999999999999999\n", "invalid-rtable"),
+    //
+    // -- server with refid option (invalid on server) --
+    invalid!("server_refid", b"server 192.0.2.1 refid GPS\n", "syntax-error"),
+    //
+    // -- server with correction option (invalid on server) --
+    invalid!("server_correction", b"server 192.0.2.1 correction 100\n", "syntax-error"),
+    //
+    // -- sensor with trusted on wildcard (wildcard + trusted) --
+    invalid!("sensor_wildcard_trusted", b"sensor * trusted\n", "syntax-error"),
+    //
+    // -- tab character in address --
+    invalid!("address_tab_injection", b"server 192.0.2.1\tweight\n", "syntax-error"),
+    //
+    // -- multiple unterminated strings --
+    invalid!("multiple_unterminated", b"sensor \"nmea0\nserver \"10.0.0.1\n", "syntax-error"),
+    //
+    // -- listen on with port suffix --
+    invalid!("listen_with_port", b"listen on 127.0.0.1:123\n", "syntax-error"),
+    //
+    // -- URL with only scheme and colon --
+    invalid!("constraint_bare_scheme", b"constraint from \"https:\"\n", "syntax-error"),
+    //
+    // -- URL with no path after hostname --
+    invalid!("constraint_no_path", b"constraint from \"https://example.com\"\n", "syntax-error"),
+    //
+    // -- empty quoted constraint URL --
+    invalid!("constraint_no_host_in_url", b"constraint from \"https:///path\"\n", "invalid-address"),
+    //
+    // -- constraint from with invalid port range --
+    invalid!("constraint_port_overflow", b"constraint from \"https://192.0.2.1:99999/\"\n", "invalid-address"),
 ];
 
 fn corpus_digest() -> String {
@@ -991,7 +1496,7 @@ mod tests {
         // and force a conscious update to the expected value.
         assert_eq!(
             d1,
-            "90958b0570ccd61734cb59dacb3a7944c9c1a6981258646af0af8b213c7369c6",
+            "f8c335d559823c0f70ee173346a973bcb37086606963225a02ab4775993493d8",
             "corpus digest changed — update this expected value if CORPUS was intentionally modified",
         );
     }

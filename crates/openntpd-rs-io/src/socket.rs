@@ -90,6 +90,34 @@ unsafe fn set_sock_opt(
 ///
 /// - `reuse_port`: set `SO_REUSEPORT` (Linux 3.9+).
 /// - `timestamping`: set `SO_TIMESTAMP` for kernel RX timestamps.
+/// Set `FD_CLOEXEC` on a file descriptor via `fcntl(2)`.
+///
+/// This is needed on platforms where `SOCK_CLOEXEC` is not available
+/// as a socket(2) flag (e.g. macOS).  On other platforms it is a
+/// no-op since `SOCK_CLOEXEC` is used at creation time.
+#[cfg(target_os = "macos")]
+pub fn set_cloexec(fd: std::os::unix::io::RawFd) -> std::io::Result<()> {
+    // SAFETY: fcntl(F_GETFD) is safe with a valid fd.
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
+    if flags == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: fcntl(F_SETFD) is safe with a valid fd and flags.
+    let ret = unsafe { libc::fcntl(fd, libc::F_SETFD, flags | libc::FD_CLOEXEC) };
+    if ret == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// Bind an NTP UDP socket, applying pre-bind options.
+///
+/// Options are configured **before** binding.  The raw fd is wrapped
+/// in `OwnedFd` immediately after creation so all error paths close
+/// it automatically via RAII.
+///
+/// - `reuse_port`: set `SO_REUSEPORT` (Linux 3.9+).
+/// - `timestamping`: set `SO_TIMESTAMP` for kernel RX timestamps.
 pub fn bind_ntp_socket(
     addr: SocketAddr,
     reuse_port: bool,
@@ -99,16 +127,32 @@ pub fn bind_ntp_socket(
         SocketAddr::V4(_) => libc::AF_INET,
         SocketAddr::V6(_) => libc::AF_INET6,
     };
-    // SAFETY: socket with valid domain, SOCK_DGRAM | SOCK_CLOEXEC, UDP.
+    // SAFETY: socket with valid domain, SOCK_DGRAM, UDP.
+    // SOCK_CLOEXEC is not available on macOS, so we omit it and
+    // set FD_CLOEXEC via fcntl afterwards when on macOS.
     let fd = unsafe {
-        libc::socket(
-            domain,
-            libc::SOCK_DGRAM | libc::SOCK_CLOEXEC,
-            libc::IPPROTO_UDP,
-        )
+        #[cfg(target_os = "macos")]
+        {
+            libc::socket(domain, libc::SOCK_DGRAM, libc::IPPROTO_UDP)
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            libc::socket(
+                domain,
+                libc::SOCK_DGRAM | libc::SOCK_CLOEXEC,
+                libc::IPPROTO_UDP,
+            )
+        }
     };
     if fd < 0 {
         return Err(SocketError::Io(std::io::Error::last_os_error()));
+    }
+
+    // On macOS, set FD_CLOEXEC manually since SOCK_CLOEXEC isn't
+    // available as a socket(2) flag.
+    #[cfg(target_os = "macos")]
+    {
+        set_cloexec(fd).map_err(SocketError::Io)?;
     }
 
     // Wrap immediately for RAII cleanup on all error paths.

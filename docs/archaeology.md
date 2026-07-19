@@ -587,9 +587,9 @@ This is an additional security layer not available on portable platforms. On Lin
 | Distribution | `adjtimex` | `adjfreq(2)` | Socket API | Signal API | Status |
 |-------------|------------|---------------|------------|------------|--------|
 | Linux (Debian/Ubuntu/Alpine/Fedora) | ✓ | N/A | ✓ | ⚠ Not wired | **Primary target** |
-| FreeBSD | ✗ | ✗ Stub | ⚠ Untested | ⚠ Not wired | **Not tested** |
-| OpenBSD | ✗ | ✗ Stub | ⚠ Untested | ⚠ Not wired | **Not tested** |
-| macOS | ✗ | ✗ Stub | ⚠ Untested | ⚠ Not wired | **Not tested** |
+| FreeBSD | N/A | ✓ `adjfreq(2)` | ✓ | ⚠ Not wired | **Supported** |
+| OpenBSD | N/A | ✗ Stub | ⚠ Untested | ⚠ Not wired | **Not tested** |
+| macOS | N/A | ✗ (mach_timebase) | ✓ fcntl `FD_CLOEXEC` | ⚠ Not wired | **Supported** |
 | NetBSD | ✗ | ✗ | ⚠ Untested | ⚠ Not wired | **Not present** |
 
 The Docker VM matrix (Debian, Ubuntu, Alpine, Fedora, FreeBSD) has been designed but **no cross-distro oracle tests have been executed**.

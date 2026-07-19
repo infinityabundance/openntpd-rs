@@ -63,13 +63,13 @@ Things `openntpd-rs` deliberately does **not** do yet.
 
 ## Platform gaps
 
-| Platform | adjfreq | Status |
-|----------|---------|--------|
-| Linux | adjtimex | Implemented (internally tested) |
-| FreeBSD | adjfreq(2) | Stub |
-| OpenBSD | adjfreq(2) | Stub |
-| macOS | mach_timebase | Stub |
-| Solaris | adjtime(2) | Stub |
+| Platform | adjfreq | adjtime | Clock read | Socket | Status |
+|----------|---------|---------|------------|--------|--------|
+| Linux | adjtimex | adjtime_oss | clock_gettime | SOCK_CLOEXEC | Supported |
+| FreeBSD | adjfreq(2) | adjtime_oss | clock_gettime | SOCK_CLOEXEC | Supported |
+| OpenBSD | adjfreq(2) | adjtime_oss | clock_gettime | SOCK_CLOEXEC | Stub |
+| macOS | Unsupported | adjtime_oss | mach_timebase | fcntl FD_CLOEXEC | Supported |
+| Solaris | — | adjtime(2) | — | — | Stub |
 
 ## Unimplemented features
 

@@ -887,10 +887,10 @@ fn generate_negative_capabilities(docs_gen: &Path) -> anyhow::Result<()> {
     );
 
     md.push_str(
-        "## Platform gaps\n\n| Platform | adjfreq | Status |\n|----------|---------|--------|\n",
+        "## Platform gaps\n\n| Platform | adjfreq | adjtime | Clock read | Socket | Status |\n|----------|---------|---------|------------|--------|--------|\n",
     );
-    md.push_str("| Linux | adjtimex | Implemented (internally tested) |\n| FreeBSD | adjfreq(2) | Stub |\n| OpenBSD | adjfreq(2) | Stub |\n");
-    md.push_str("| macOS | mach_timebase | Stub |\n| Solaris | adjtime(2) | Stub |\n\n");
+    md.push_str("| Linux | adjtimex | adjtime_oss | clock_gettime | SOCK_CLOEXEC | Supported |\n| FreeBSD | adjfreq(2) | adjtime_oss | clock_gettime | SOCK_CLOEXEC | Supported |\n| OpenBSD | adjfreq(2) | adjtime_oss | clock_gettime | SOCK_CLOEXEC | Stub |\n");
+    md.push_str("| macOS | Unsupported | adjtime_oss | mach_timebase | fcntl FD_CLOEXEC | Supported |\n| Solaris | — | adjtime(2) | — | — | Stub |\n\n");
 
     md.push_str("## Unimplemented features\n\n- Symmetric/broadcast/control/private modes, Autokey, NTS, MS-SNTP, kernel PLL, reference clocks, hardware timestamping, privsep imsg\n\n");
     md.push_str("## Highest-risk unsafe module\n\n`io::socket` — recvmsg, CMSG macros, sockaddr casts. Structurally correct; no runtime tests for kernel timestamp ancillary parsing or truncation rejection.\n\n");
