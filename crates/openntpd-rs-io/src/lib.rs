@@ -17,5 +17,6 @@
 
 pub mod clock;
 pub mod file;
+pub mod imsg;
 pub mod process;
 pub mod socket;
