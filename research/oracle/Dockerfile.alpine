@@ -1,11 +1,7 @@
-# Build OpenNTPD 7.9p1 oracle from source
-# Multi-architecture: supports amd64, arm64 via debian:bookworm-slim
-FROM debian:bookworm-slim AS builder
-
-RUN apt-get update && apt-get install -y \
-    gcc make libssl-dev libtls-dev bison flex wget \
-    && rm -rf /var/lib/apt/lists/*
-
+# Build OpenNTPD 7.9p1 oracle from source — Alpine Linux 3.20
+# Multi-architecture: supports amd64, arm64 via alpine:3.20
+FROM alpine:3.20 AS builder
+RUN apk add --no-cache gcc make musl-dev openssl-dev libretls-dev bison flex wget
 WORKDIR /build
 RUN wget https://ftp.openbsd.org/pub/OpenBSD/OpenNTPD/openntpd-7.9p1.tar.gz
 RUN echo "091eeb3f4e358e28c3ab2ea58f93d7a0b5758a20d7c8a0418e162e9b2c27addc  openntpd-7.9p1.tar.gz" | sha256sum -c
@@ -13,9 +9,7 @@ RUN tar xzf openntpd-7.9p1.tar.gz
 WORKDIR /build/openntpd-7.9p1
 RUN ./configure && make && make install && strip /usr/local/sbin/ntpd
 
-FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y \
-    libtls-dev libssl-dev ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+FROM alpine:3.20
+RUN apk add --no-cache libretls ca-certificates
 COPY --from=builder /usr/local/sbin/ntpd /usr/local/sbin/ntpd
 RUN ntpd -n -f /dev/null 2>/dev/null; echo "Oracle built OK: $?"

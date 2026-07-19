@@ -16,6 +16,9 @@
 //!
 //! # Against oracle with manifest
 //! cargo xtask parity --oracle /usr/sbin/ntpd --oracle-manifest manifest.json
+//!
+//! # Against Docker oracle image
+//! cargo xtask parity --oracle-image openntpd-oracle:debian
 //! ```
 
 use std::io::Write;
@@ -347,6 +350,44 @@ fn run_case(ntpd_bin: &Path, run_dir: &Path, case_id: &str, config: &[u8]) -> Ca
     }
 }
 
+/// Run the ntpd oracle inside a Docker container.
+/// Mounts the config file as a read-only volume at `/tmp/ntpd.conf`
+/// and captures the exit code and stderr.
+fn run_oracle_via_docker(image: &str, run_dir: &Path, case_id: &str, config: &[u8]) -> CaseResult {
+    let config_path = run_dir.join(format!("{case_id}.conf"));
+    std::fs::write(&config_path, config).expect("write case config");
+
+    // Resolve an absolute path for the mount — Docker requires it
+    let abs_config = std::fs::canonicalize(&config_path).unwrap_or_else(|_| config_path.clone());
+
+    let output = Command::new("docker")
+        .args(["run", "--rm", "-v"])
+        .arg(format!("{}:/tmp/ntpd.conf:ro", abs_config.display()))
+        .args([image, "ntpd", "-n", "-f", "/tmp/ntpd.conf"])
+        .output()
+        .expect("execute docker run");
+
+    CaseResult {
+        exit_code: output.status.code().unwrap_or(-1),
+        stderr: output.stderr,
+    }
+}
+
+/// Check that Docker is available on the host.
+fn check_docker_available() -> anyhow::Result<()> {
+    let status = Command::new("docker")
+        .arg("info")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map_err(|e| anyhow::anyhow!("failed to run docker: {e} — is Docker installed?"))?;
+
+    if !status.success() {
+        anyhow::bail!("docker info returned non-zero exit — is Docker running?");
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Normalization
 // ---------------------------------------------------------------------------
@@ -518,6 +559,7 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
     let mut oracle_path: Option<PathBuf> = None;
     let mut oracle_sha256: Option<String> = None;
     let mut oracle_manifest_path: Option<PathBuf> = None;
+    let mut oracle_image: Option<String> = None;
     let mut skip_oracle = false;
 
     let mut i = 0;
@@ -547,6 +589,16 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
                         .into(),
                 );
             }
+            "--oracle-image" => {
+                i += 1;
+                oracle_image = Some(
+                    args.get(i)
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("--oracle-image requires image name argument")
+                        })?
+                        .clone(),
+                );
+            }
             "--skip-oracle" => skip_oracle = true,
             other => anyhow::bail!("unknown parity flag: {other}"),
         }
@@ -558,12 +610,22 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
 
     // ---- Validation ----
     if skip_oracle {
-        if oracle_path.is_some() || oracle_sha256.is_some() || oracle_manifest_path.is_some() {
+        if oracle_path.is_some()
+            || oracle_sha256.is_some()
+            || oracle_manifest_path.is_some()
+            || oracle_image.is_some()
+        {
             anyhow::bail!("--skip-oracle cannot be combined with oracle identity options");
+        }
+    } else if oracle_image.is_some() {
+        // Docker oracle mode — check Docker availability and pull image
+        check_docker_available()?;
+        if oracle_path.is_some() || oracle_sha256.is_some() || oracle_manifest_path.is_some() {
+            anyhow::bail!("--oracle-image cannot be combined with --oracle or --oracle-sha256 or --oracle-manifest");
         }
     } else {
         if oracle_path.is_none() {
-            anyhow::bail!("oracle mode requires --oracle <path>");
+            anyhow::bail!("oracle mode requires --oracle <path> or --oracle-image <image>");
         }
         if oracle_sha256.is_none() && oracle_manifest_path.is_none() {
             anyhow::bail!("oracle mode requires --oracle-sha256 or --oracle-manifest");
@@ -657,6 +719,32 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
         (None, _) => None,
     };
 
+    // ---- Docker oracle mode: ensure image is available ----
+    if let Some(ref image) = oracle_image {
+        // Check if the image is already available locally
+        let local = Command::new("docker")
+            .args(["image", "inspect", image])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .ok()
+            .map(|s| s.success())
+            .unwrap_or(false);
+
+        if !local {
+            eprintln!("Pulling Docker oracle image: {image}...");
+            let status = Command::new("docker")
+                .args(["pull", image])
+                .status()
+                .map_err(|e| anyhow::anyhow!("docker pull failed: {e}"))?;
+            if !status.success() {
+                anyhow::bail!("docker pull {image} returned non-zero exit");
+            }
+        } else {
+            eprintln!("Docker oracle image found locally: {image}");
+        }
+    }
+
     // ---- Create isolated run directory and durable evidence directory ----
     let ts = chrono_now();
     let run_dir = make_run_dir()?;
@@ -681,9 +769,13 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
         let rust_result = run_case(&rust_ntpd, &run_dir, case.id, case.config);
         let rust_category = normalize_category(&rust_result.stderr, rust_result.exit_code);
 
-        let oracle_result = oracle_ntpd
-            .as_ref()
-            .map(|p| run_case(p, &run_dir, case.id, case.config));
+        let oracle_result: Option<CaseResult> = if let Some(ref image) = oracle_image {
+            Some(run_oracle_via_docker(image, &run_dir, case.id, case.config))
+        } else {
+            oracle_ntpd
+                .as_ref()
+                .map(|p| run_case(p, &run_dir, case.id, case.config))
+        };
         let oracle_category = oracle_result
             .as_ref()
             .map(|r| normalize_category(&r.stderr, r.exit_code));
