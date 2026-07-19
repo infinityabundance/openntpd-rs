@@ -27,8 +27,14 @@ pub mod globals;
 pub mod imsg;
 pub mod ntp_child;
 pub mod platform;
+#[cfg(target_os = "openbsd")]
+pub mod pledge;
 pub mod privsep;
 pub mod process;
+pub mod ptp_io;
+pub mod refclock_io;
+#[cfg(target_os = "linux")]
+pub mod seccomp;
 pub mod sensor_io;
 pub mod socket;
 pub mod util;

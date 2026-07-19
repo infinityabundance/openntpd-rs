@@ -556,7 +556,9 @@ pub mod broadcast;
 pub mod clock;
 pub mod engine;
 pub mod msg;
+pub mod ptp;
 pub mod query;
+pub mod sntp;
 
 // ---------------------------------------------------------------------------
 // Tests

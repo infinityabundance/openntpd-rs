@@ -60,6 +60,7 @@ pub mod dns;
 pub mod log;
 pub mod ntp;
 pub mod peer;
+pub mod refclock;
 pub mod sensor;
 pub mod server;
 pub mod util;
