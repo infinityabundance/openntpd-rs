@@ -11,15 +11,21 @@
 //! # Self-test (no oracle needed)
 //! cargo xtask parity --skip-oracle
 //!
-//! # Against local oracle binary
-//! cargo xtask parity --oracle /usr/sbin/ntpd
+//! # Against pinned oracle binary
+//! cargo xtask parity --oracle /usr/sbin/ntpd --oracle-sha256 <expected>
 //! ```
 //!
 //! ## Evidence
 //!
-//! A JSON receipt is written to `research/oracle/receipts/<timestamp>.json`
-//! containing per-case results with SHA-256 content digests and binary
-//! identity information.
+//! A JSON receipt is written to:
+//!
+//! ```text
+//! research/oracle/receipts/self-test/<timestamp>.json     (--skip-oracle)
+//! research/oracle/receipts/oracle/<timestamp>.json        (--oracle)
+//! ```
+//!
+//! Raw stderr for each case is stored beside the receipt as
+//! `<case_id>.stderr`.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -31,21 +37,16 @@ use sha2::{Digest, Sha256};
 // Corpus definition
 // ---------------------------------------------------------------------------
 
-/// A single oracle corpus case.
+#[derive(Debug)]
 struct CorpusCase {
-    /// Unique identifier for this case.
     id: &'static str,
-    /// Configuration text (newline-terminated).
     config: &'static [u8],
-    /// Expected oracle exit code for this case.
     expected_exit: i32,
-    /// Normalized diagnostic category (empty for accepted cases).
     expected_category: &'static str,
 }
 
-/// The configuration-check corpus.
 const CORPUS: &[CorpusCase] = &[
-    // -- Accepted configurations (exit 0) --
+    // -- Accepted (exit 0) --
     CorpusCase {
         id: "empty",
         config: b"",
@@ -136,7 +137,7 @@ const CORPUS: &[CorpusCase] = &[
         expected_exit: 0,
         expected_category: "",
     },
-    // -- Rejected configurations (exit 1) --
+    // -- Rejected (exit 1) --
     CorpusCase {
         id: "unknown_directive",
         config: b"foobar\n",
@@ -229,64 +230,105 @@ const CORPUS: &[CorpusCase] = &[
     },
 ];
 
+fn corpus_digest() -> String {
+    let mut bytes = Vec::new();
+    for case in CORPUS {
+        bytes.extend_from_slice(case.id.as_bytes());
+        bytes.push(0);
+        bytes.extend_from_slice(&(case.config.len() as u64).to_be_bytes());
+        bytes.extend_from_slice(case.config);
+        bytes.extend_from_slice(&case.expected_exit.to_be_bytes());
+        bytes.extend_from_slice(case.expected_category.as_bytes());
+        bytes.push(0xff);
+    }
+    sha256_digest(&bytes)
+}
+
 // ---------------------------------------------------------------------------
-// SHA-256 helper
+// SHA-256
 // ---------------------------------------------------------------------------
 
 fn sha256_digest(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
+// (SHA-256 tests live in the main `tests` module below.)
+
+// ---------------------------------------------------------------------------
+// Pinned oracle manifest
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+struct OracleManifest {
+    implementation: String,
+    version: String,
+    source_sha256: String,
+    build_recipe_sha256: String,
+    binary_sha256: String,
+    target: String,
+}
+
+fn default_oracle_manifest() -> OracleManifest {
+    OracleManifest {
+        implementation: "OpenNTPD".into(),
+        version: "7.9p1".into(),
+        source_sha256: "pending".into(),
+        build_recipe_sha256: "pending".into(),
+        binary_sha256: "pending".into(),
+        target: std::env::consts::ARCH.into(),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Binary resolve
 // ---------------------------------------------------------------------------
 
-/// Locate the compiled Rust `ntpd` binary by building it.
 fn resolve_rust_ntpd() -> anyhow::Result<PathBuf> {
-    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let workspace = manifest_dir.parent().unwrap();
+    let workspace = workspace_root();
+    let target_dir = workspace.join("target/parity");
 
-    // Build the Rust ntpd binary to ensure it exists
+    // Build to a dedicated target directory so stale build artifacts
+    // from other profiles never contaminate the parity run.
     let status = Command::new("cargo")
-        .args(["build", "-p", "openntpd-rs-d", "--bin", "ntpd"])
-        .current_dir(workspace)
+        .args([
+            "build",
+            "-p",
+            "openntpd-rs-d",
+            "--bin",
+            "ntpd",
+            "--target-dir",
+        ])
+        .arg(&target_dir)
+        .current_dir(&workspace)
         .status()
-        .map_err(|e| anyhow::anyhow!("failed to run cargo build: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("cargo build failed: {e}"))?;
 
     if !status.success() {
         anyhow::bail!("cargo build -p openntpd-rs-d --bin ntpd failed");
     }
 
-    // Find the built binary
-    let profile = if workspace.join("target/release/ntpd").exists() {
-        "release"
-    } else {
-        "debug"
-    };
-
-    let path = workspace.join(format!("target/{profile}/ntpd"));
+    let path = target_dir.join("debug/ntpd");
     if !path.exists() {
-        anyhow::bail!("Rust ntpd binary not found after build at {path:?}");
+        anyhow::bail!("Rust ntpd not found after build at {path:?}");
     }
-
     Ok(path)
 }
 
-/// Canonicalize a binary path and check it exists.
-fn resolve_binary(path: &Path) -> anyhow::Result<PathBuf> {
-    let canonical =
-        std::fs::canonicalize(path).map_err(|e| anyhow::anyhow!("cannot resolve {path:?}: {e}"))?;
-    if !canonical.is_file() {
-        anyhow::bail!("{canonical:?} is not a file");
-    }
-    Ok(canonical)
+fn workspace_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .to_path_buf()
+}
+
+fn receipts_dir(mode: &str) -> PathBuf {
+    workspace_root().join("research/oracle/receipts").join(mode)
 }
 
 // ---------------------------------------------------------------------------
 // Runner
 // ---------------------------------------------------------------------------
 
-/// Result from executing a single corpus case.
 #[derive(Debug, Clone)]
 struct CaseResult {
     exit_code: i32,
@@ -348,11 +390,13 @@ fn normalize_category(stderr: &[u8], exit_code: i32) -> &'static str {
 #[derive(serde::Serialize)]
 struct Receipt {
     schema_version: u32,
+    mode: String,
     timestamp: String,
-    corpus_revision: String,
+    corpus_digest: String,
     corpus_size: usize,
     rust_binary: BinaryInfo,
     oracle_binary: Option<BinaryInfo>,
+    oracle_manifest: Option<OracleManifest>,
     results: Vec<CaseReceipt>,
     summary: Summary,
 }
@@ -376,6 +420,7 @@ struct CaseReceipt {
     oracle_category: Option<String>,
     oracle_stderr_sha256: Option<String>,
     expected_match: bool,
+    /// `null` = no oracle, `true` = oracle agrees, `false` = oracle disagrees.
     oracle_parity: Option<bool>,
     verdict: String,
 }
@@ -387,18 +432,31 @@ struct Summary {
     total: u32,
 }
 
-fn write_receipt(receipt: &Receipt) -> anyhow::Result<PathBuf> {
-    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let receipts_dir = manifest_dir
-        .parent()
-        .unwrap()
-        .join("research")
-        .join("oracle")
-        .join("receipts");
-    std::fs::create_dir_all(&receipts_dir)?;
+fn read_binary_sha256(path: &Path) -> anyhow::Result<String> {
+    let bytes = std::fs::read(path).map_err(|e| anyhow::anyhow!("cannot read {path:?}: {e}"))?;
+    Ok(sha256_digest(&bytes))
+}
+
+fn write_receipt(
+    receipt: &Receipt,
+    stderr_dir: &Path,
+    results: &[(&CorpusCase, &CaseResult, Option<&CaseResult>)],
+) -> anyhow::Result<PathBuf> {
+    let dir = receipts_dir(&receipt.mode);
+    std::fs::create_dir_all(&dir)?;
 
     let ts = &receipt.timestamp.replace([' ', ':'], "_");
-    let path = receipts_dir.join(format!("parity_{ts}.json"));
+    let path = dir.join(format!("parity_{ts}.json"));
+
+    // Write raw stderr for each case
+    for (case, rust, oracle) in results {
+        let case_dir = stderr_dir.join(case.id);
+        std::fs::create_dir_all(&case_dir)?;
+        std::fs::write(case_dir.join("rust.stderr"), &rust.stderr)?;
+        if let Some(o) = oracle {
+            std::fs::write(case_dir.join("oracle.stderr"), &o.stderr)?;
+        }
+    }
 
     let json = serde_json::to_string_pretty(receipt)?;
     let mut f = std::fs::File::create(&path)?;
@@ -413,9 +471,10 @@ fn write_receipt(receipt: &Receipt) -> anyhow::Result<PathBuf> {
 // Public entry point
 // ---------------------------------------------------------------------------
 
-/// Run the oracle parity check.
 pub fn run(args: &[String]) -> anyhow::Result<()> {
     let mut oracle_path: Option<PathBuf> = None;
+    let mut oracle_sha256: Option<String> = None;
+    let mut oracle_manifest_path: Option<PathBuf> = None;
     let mut skip_oracle = false;
 
     let mut i = 0;
@@ -429,6 +488,22 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
                         .into(),
                 );
             }
+            "--oracle-sha256" => {
+                i += 1;
+                oracle_sha256 = Some(
+                    args.get(i)
+                        .ok_or_else(|| anyhow::anyhow!("--oracle-sha256 requires argument"))?
+                        .clone(),
+                );
+            }
+            "--oracle-manifest" => {
+                i += 1;
+                oracle_manifest_path = Some(
+                    args.get(i)
+                        .ok_or_else(|| anyhow::anyhow!("--oracle-manifest requires path argument"))?
+                        .into(),
+                );
+            }
             "--skip-oracle" => skip_oracle = true,
             other => anyhow::bail!("unknown parity flag: {other}"),
         }
@@ -439,25 +514,70 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
         anyhow::bail!("no corpus cases defined");
     }
 
+    let mode = if skip_oracle {
+        "self-test"
+    } else {
+        "oracle-parity"
+    };
+
     // Resolve the Rust ntpd binary
     let rust_ntpd = resolve_rust_ntpd()?;
     eprintln!("Rust ntpd: {}", rust_ntpd.display());
-    let rust_sha = sha256_digest(&std::fs::read(&rust_ntpd)?);
+    let rust_sha = read_binary_sha256(&rust_ntpd)?;
 
-    // Resolve the oracle binary
+    // Resolve oracle binary
     let oracle_ntpd: Option<PathBuf> = match (&oracle_path, skip_oracle) {
         (Some(path), _) => {
-            let resolved = resolve_binary(path)?;
+            let resolved = std::fs::canonicalize(path)
+                .map_err(|e| anyhow::anyhow!("cannot resolve oracle {path:?}: {e}"))?;
+            if !resolved.is_file() {
+                anyhow::bail!("oracle not found at {resolved:?}");
+            }
             eprintln!("Oracle ntpd: {}", resolved.display());
             Some(resolved)
         }
         (None, true) => {
-            eprintln!("Oracle: skipped");
+            eprintln!("Oracle: skipped (self-test mode)");
             None
         }
         (None, false) => {
             anyhow::bail!("no oracle path given. Pass --oracle <path> or --skip-oracle")
         }
+    };
+
+    // Oracle identity pinning
+    let oracle_manifest = if let Some(ref oracle) = oracle_ntpd {
+        // Resolve manifest
+        let manifest: OracleManifest = if let Some(ref mpath) = oracle_manifest_path {
+            let text = std::fs::read_to_string(mpath)
+                .map_err(|e| anyhow::anyhow!("cannot read oracle manifest {mpath:?}: {e}"))?;
+            serde_json::from_str(&text)
+                .map_err(|e| anyhow::anyhow!("invalid oracle manifest: {e}"))?
+        } else {
+            default_oracle_manifest()
+        };
+
+        // Verify binary SHA-256 if specified
+        let actual_sha = read_binary_sha256(oracle)?;
+        if let Some(ref expected_sha) = oracle_sha256 {
+            if actual_sha != *expected_sha {
+                anyhow::bail!(
+                    "oracle SHA-256 mismatch:\n  expected: {expected_sha}\n  actual:   {actual_sha}"
+                );
+            }
+        }
+
+        // Also check manifest if binary_sha256 is specified and not "pending"
+        if manifest.binary_sha256 != "pending" && manifest.binary_sha256 != actual_sha {
+            anyhow::bail!(
+                "oracle manifest binary SHA-256 mismatch:\n  manifest: {}\n  actual:   {actual_sha}",
+                manifest.binary_sha256,
+            );
+        }
+
+        Some(manifest)
+    } else {
+        None
     };
 
     // Prevent self-comparison
@@ -472,12 +592,6 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
         }
     }
 
-    // Binary info for receipt
-    let oracle_binary_info = oracle_ntpd.as_ref().map(|p| BinaryInfo {
-        path: p.display().to_string(),
-        sha256: sha256_digest(&std::fs::read(p).unwrap_or_default()),
-    });
-
     // Print header
     println!(
         "{:6} | {:40} | {:8} | {:8} | {:8} | {:20} | {:20} | {:20} | match",
@@ -485,7 +599,8 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
     );
     println!("{}", "-".repeat(155));
 
-    let mut results = Vec::new();
+    let mut results: Vec<(String, CaseReceipt)> = Vec::new();
+    let mut stderr_pairs: Vec<(&CorpusCase, CaseResult, Option<CaseResult>)> = Vec::new();
     let mut passed = 0u32;
     let mut failed = 0u32;
 
@@ -499,27 +614,25 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
             .as_ref()
             .map(|r| normalize_category(&r.stderr, r.exit_code));
 
-        // Check: Rust matches expected
         let rust_expected_ok =
             rust_result.exit_code == case.expected_exit && rust_category == case.expected_category;
 
-        // Check: oracle matches expected (if present)
         let oracle_expected_ok = oracle_result.as_ref().map_or(true, |oracle| {
             oracle.exit_code == case.expected_exit
                 && normalize_category(&oracle.stderr, oracle.exit_code) == case.expected_category
         });
 
-        // Check: Rust and oracle agree (if oracle present)
         let parity_ok = oracle_result.as_ref().map_or(true, |oracle| {
             oracle.exit_code == rust_result.exit_code
                 && normalize_category(&oracle.stderr, oracle.exit_code) == rust_category
         });
 
-        let case_pass = rust_expected_ok && oracle_expected_ok && parity_ok;
+        // oracle_parity: null if no oracle, true if agrees, false if disagrees
+        let oracle_parity = oracle_result.as_ref().map(|_| parity_ok);
 
+        let case_pass = rust_expected_ok && oracle_expected_ok && parity_ok;
         let verdict = if case_pass { "PASS" } else { "FAIL" };
 
-        // Print row
         println!(
             "{:6} | {:40} | {:8} | {:8} | {:8} | {:20} | {:20} | {:20} | {}",
             verdict,
@@ -534,26 +647,30 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
         );
 
         if case_pass {
-            passed += 1;
+            passed += 1
         } else {
-            failed += 1;
+            failed += 1
         }
 
-        results.push(CaseReceipt {
-            case_id: case.id.to_string(),
-            config_sha256: config_sha,
-            expected_exit: case.expected_exit,
-            expected_category: case.expected_category.to_string(),
-            rust_exit: rust_result.exit_code,
-            rust_category: rust_category.to_string(),
-            rust_stderr_sha256: sha256_digest(&rust_result.stderr),
-            oracle_exit: oracle_result.as_ref().map(|r| r.exit_code),
-            oracle_category: oracle_category.map(|s| s.to_string()),
-            oracle_stderr_sha256: oracle_result.as_ref().map(|r| sha256_digest(&r.stderr)),
-            expected_match: rust_expected_ok && oracle_expected_ok,
-            oracle_parity: parity_ok.then_some(true),
-            verdict: verdict.to_string(),
-        });
+        results.push((
+            case.id.to_string(),
+            CaseReceipt {
+                case_id: case.id.to_string(),
+                config_sha256: config_sha,
+                expected_exit: case.expected_exit,
+                expected_category: case.expected_category.to_string(),
+                rust_exit: rust_result.exit_code,
+                rust_category: rust_category.to_string(),
+                rust_stderr_sha256: sha256_digest(&rust_result.stderr),
+                oracle_exit: oracle_result.as_ref().map(|r| r.exit_code),
+                oracle_category: oracle_category.map(|s| s.to_string()),
+                oracle_stderr_sha256: oracle_result.as_ref().map(|r| sha256_digest(&r.stderr)),
+                expected_match: rust_expected_ok && oracle_expected_ok,
+                oracle_parity,
+                verdict: verdict.to_string(),
+            },
+        ));
+        stderr_pairs.push((case, rust_result, oracle_result));
     }
 
     println!("{}", "-".repeat(155));
@@ -563,17 +680,33 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
     );
 
     // Write evidence receipt
+    let ts = chrono_now();
+    let receipt_mode = mode.to_string();
+
+    let stderr_dir = workspace_root()
+        .join("research/oracle/receipts")
+        .join(&receipt_mode)
+        .join(format!("stderr_{}", ts.replace([' ', ':'], "_")));
+
     let receipt = Receipt {
         schema_version: 1,
-        timestamp: chrono_now(),
-        corpus_revision: sha256_digest(b"corpus-v1"),
+        mode: receipt_mode.clone(),
+        timestamp: ts.clone(),
+        corpus_digest: corpus_digest(),
         corpus_size: CORPUS.len(),
         rust_binary: BinaryInfo {
             path: rust_ntpd.display().to_string(),
             sha256: rust_sha,
         },
-        oracle_binary: oracle_binary_info,
-        results,
+        oracle_binary: oracle_ntpd.as_ref().map(|p| {
+            let sha = read_binary_sha256(p).unwrap_or_else(|_| "error".into());
+            BinaryInfo {
+                path: p.display().to_string(),
+                sha256: sha,
+            }
+        }),
+        oracle_manifest,
+        results: results.into_iter().map(|(_, r)| r).collect(),
         summary: Summary {
             passed,
             failed,
@@ -581,7 +714,12 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
         },
     };
 
-    write_receipt(&receipt)?;
+    let refs: Vec<(&CorpusCase, &CaseResult, Option<&CaseResult>)> = stderr_pairs
+        .iter()
+        .map(|(c, r, o)| (*c, r, o.as_ref()))
+        .collect();
+
+    write_receipt(&receipt, &stderr_dir, &refs)?;
 
     if failed > 0 {
         anyhow::bail!(
@@ -593,22 +731,21 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Simple ISO-8601 timestamp without pulling in a datetime crate.
+// ---------------------------------------------------------------------------
+// Timestamp helper
+// ---------------------------------------------------------------------------
+
 fn chrono_now() -> String {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
-    // Split into date/time components using simple integer math
     let days = secs / 86400;
     let time_secs = secs % 86400;
     let hours = time_secs / 3600;
     let minutes = (time_secs % 3600) / 60;
     let seconds = time_secs % 60;
-
-    // Compute year/month/day from days since epoch (1970-01-01)
     let (y, m, d) = days_to_date(days as i64);
-
     format!(
         "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
         y, m, d, hours, minutes, seconds
@@ -616,7 +753,6 @@ fn chrono_now() -> String {
 }
 
 fn days_to_date(mut days: i64) -> (i64, i64, i64) {
-    // Algorithm from Howard Hinnant
     days += 719468;
     let era = if days >= 0 { days } else { days - 146096 } / 146097;
     let doe = days - era * 146097;
@@ -629,3 +765,74 @@ fn days_to_date(mut days: i64) -> (i64, i64, i64) {
     let y = if m <= 2 { y + 1 } else { y };
     (y, m, d)
 }
+
+// ---------------------------------------------------------------------------
+// Harness tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A fake ntpd binary that exits with a configurable code and writes a
+    /// message to stderr, for testing the harness itself.
+    fn write_fake_ntpd(exe_path: &Path, exit_code: i32, stderr_msg: &[u8]) {
+        let script = format!(
+            "#!/bin/sh\necho '{}' >&2\nexit {}\n",
+            String::from_utf8_lossy(stderr_msg).replace('\'', "'\\''"),
+            exit_code,
+        );
+        std::fs::write(exe_path, script.as_bytes()).unwrap();
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(exe_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+
+    fn fake_dir() -> PathBuf {
+        let dir = std::env::temp_dir().join("openntpd_rs_test_fakes");
+        let _ = std::fs::create_dir_all(&dir);
+        dir
+    }
+
+    #[test]
+    fn oracle_agreement_passes() {
+        let d = fake_dir();
+        let rust = d.join("ntpd_ok");
+        let oracle = d.join("ntpd_ok2");
+        write_fake_ntpd(&rust, 0, b"configuration OK");
+        write_fake_ntpd(&oracle, 0, b"configuration OK");
+
+        let rust_res = run_case(&rust, b"listen on *\n");
+        let oracle_res = run_case(&oracle, b"listen on *\n");
+
+        assert_eq!(rust_res.exit_code, 0);
+        assert_eq!(oracle_res.exit_code, 0);
+        let _ = std::fs::remove_file(&rust);
+        let _ = std::fs::remove_file(&oracle);
+    }
+
+    #[test]
+    fn sha256_known_vector() {
+        assert_eq!(
+            sha256_digest(b""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        );
+        assert_eq!(
+            sha256_digest(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+        );
+    }
+
+    #[test]
+    fn corpus_digest_is_stable() {
+        let d1 = corpus_digest();
+        let d2 = corpus_digest();
+        assert_eq!(d1, d2);
+    }
+}
+
+// Ensure the serde dependencies are available for JSON receipt writing.
+// The `#[derive(serde::Serialize)]` macros are used above.

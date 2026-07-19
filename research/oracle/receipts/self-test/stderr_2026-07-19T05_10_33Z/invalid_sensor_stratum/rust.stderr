@@ -1,0 +1,1 @@
+/home/one/openntpd-rs/target/parity/debug/ntpd: 21:22: stratum must be 1..=15, got 0
