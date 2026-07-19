@@ -19,17 +19,28 @@
 //! | `config` (lexer)      | Implemented — internally tested     |
 //! | `config` (parser)     | Implemented — internally tested     |
 //!
-//! ## Planned surfaces
+//! ## Implemented surfaces
 //!
-//! - `config` runtime lowering — DNS resolution, peer creation
-//! - `peer` — client state machine
-//! - `server` — NTP responder
-//! - `control` — imsg protocol
-//! - `constraint` — HTTPS constraint validation
-//! - `sensor` — hardware sensor framework
-//! - `dns` — DNS child process
-//! - `log` — logging subsystem
-//! - `daemon` — event loop, clock discipline
+//! | Surface               | Status                              |
+//! |-----------------------|-------------------------------------|
+//! | `config::runtime`     | Implemented — internally tested     |
+//! | `peer`                | Implemented — internally tested     |
+//! | `server`              | Implemented — internally tested     |
+//! | `control`             | Implemented — internally tested     |
+//! | `constraint`          | Implemented — internally tested     |
+//! | `sensor`              | Implemented — internally tested     |
+//! | `dns`                 | Implemented — internally tested     |
+//! | `log`                 | Implemented — internally tested     |
+//!
+//! ## Planned surfaces (Phase 5+)
+//!
+//! - `daemon` — full event loop, clock discipline, poll dispatch
+//! - Runtime privilege separation (privsep fork, credential drop)
+//! - Actual NTP network queries (mode 3 client over UDP)
+//! - Full clock discipline (PLL/FLL via adjtimex)
+//! - TLS constraint connections
+//! - Sensor device I/O
+//! - Daemon background mode
 
 #![no_std]
 #![deny(unsafe_code)]
@@ -37,5 +48,12 @@
 extern crate alloc;
 
 pub mod config;
+pub mod constraint;
+pub mod control;
+pub mod dns;
+pub mod log;
 pub mod ntp;
+pub mod peer;
+pub mod sensor;
+pub mod server;
 pub mod util;

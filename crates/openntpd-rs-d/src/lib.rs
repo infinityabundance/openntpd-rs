@@ -1,9 +1,9 @@
 //! `ntpd` daemon library — OpenNTPD-rs forensic reconstruction.
 //!
-//! Provides the `-n` (config check) logic and injectable CLI argument
-//! parsing for the `ntpd` binary.
+//! Provides the `-n` (config check) logic, daemon-mode infrastructure,
+//! and injectable CLI argument parsing for the `ntpd` binary.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 // ---------------------------------------------------------------------------
 // Exit codes
@@ -15,6 +15,74 @@ pub const EXIT_ERROR: u8 = 1;
 /// Exit code for unimplemented functionality (EX_CONFIG = 78).
 /// Used for the unwired daemon-mode scaffold only.
 pub const EXIT_UNIMPLEMENTED: u8 = 78;
+
+/// Exit code for invalid configuration (EX_CONFIG).
+pub const EXIT_CONFIG: u8 = 78;
+
+// ---------------------------------------------------------------------------
+// Daemon configuration & runner
+// ---------------------------------------------------------------------------
+
+/// Configuration for the ntpd daemon process.
+#[derive(Debug, Clone)]
+pub struct DaemonConfig {
+    pub config_path: PathBuf,
+    pub debug_mode: bool,
+    pub verbose: u8,
+    pub parent_proc: Option<String>,
+    pub pid_file: Option<String>,
+}
+
+/// Result of a daemon run.
+#[derive(Debug)]
+pub struct DaemonResult {
+    pub exit_code: u8,
+    pub message: String,
+}
+
+/// Run the daemon with the given configuration.
+///
+/// In `-n` mode, this performs the config check and returns immediately.
+/// In daemon mode, this starts the event loop.
+///
+/// ## Pending
+///
+/// - Event loop (poll / imsg dispatch)
+/// - Privsep fork
+/// - Socket bind
+///
+/// Currently returns `EXIT_UNIMPLEMENTED` for daemon mode.
+pub fn run_daemon(config: &DaemonConfig) -> DaemonResult {
+    let config_path = &config.config_path;
+
+    // Always validate config first.
+    let check = check_config_file(config_path);
+    if !check.is_valid {
+        let mut message = String::new();
+        for err in &check.errors {
+            message.push_str(err);
+            message.push('\n');
+        }
+        return DaemonResult {
+            exit_code: EXIT_CONFIG,
+            message,
+        };
+    }
+
+    if config.debug_mode {
+        eprintln!(
+            "debug mode, config: {}, verbosity: {}",
+            config_path.display(),
+            config.verbose
+        );
+    }
+
+    // Daemon mode: event loop, privsep fork, socket bind — pending.
+    DaemonResult {
+        exit_code: EXIT_UNIMPLEMENTED,
+        message: "daemon mode not yet implemented".into(),
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Config checking

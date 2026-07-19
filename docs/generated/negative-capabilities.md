@@ -15,8 +15,17 @@ Things `openntpd-rs` deliberately does **not** do yet.
 | Config diagnostics (`config::diagnostic`) | 3: severity, parse result |
 | Config lexer (`config::lexer`) | 93: cursor, keywords, numbers, quoted strings, NUL rejection, continuation, recovery, char class, length boundaries, backslash handling, negative number limits, escaped-quote opening, spans |
 | Config parser (`config::parser`) | 60: directive grammar, option parsing, error recovery, constraint URL splitting, spans |
+| Config runtime lowering (`config::runtime`) | 24: listener creation, server config, constraint URL splitting, sensor config, query from, rtable, DNS requests |
+| NTP client state machine (`peer`) | 47: clock filter, reachability, flash bits, poll interval, offset/delay, clock selection |
+| NTP mode 4 server (`server`) | 26: request validation, response construction, timestamp propagation, wire roundtrip |
+| Control socket protocol (`control`) | 27: request/response encoding, status/peers/sensors payloads, all composition |
+| HTTPS constraint validation (`constraint`) | 41: HTTP Date parsing, median computation, constraint window, status transitions |
+| Sensor framework (`sensor`) | 26: device model, corrections, PPS discovery, staleness, weighted selection |
+| DNS protocol (`dns`) | 26: request/response types, URL splitting, hostname validation, address families |
+| Logging subsystem (`log`) | 12: log levels, threshold filtering, adjtime threshold |
 | Clock adjfreq (`io::clock`) | 3: adjtimex conversion, overflow |
 | Socket loopback (`io::socket`) | 6: IPv4/v6, bind options, timestamp |
+| imsg framework (`io::imsg`) | 14: wire format, socket pair, dispatcher, handlers |
 
 ## Implemented — unverified against oracle
 
@@ -32,11 +41,19 @@ Things `openntpd-rs` deliberately does **not** do yet.
 
 - **parse.y lexer** (`config::lexer`) — Implemented, 93 tests: cursor, keywords, numbers, quoted strings, NUL rejection, backslash-newline, error recovery, char class, token length boundaries, negative number limits, escaped-quote opening, spans
 - **parse.y parser** (`config::parser`) — Implemented, 60 tests: directive grammar, option parsing, end-of-line enforcement, error recovery, spans, constraint URL splitting, semantic validation
-- **config.c runtime lowering** — **Planned**: DNS resolution, peer creation
+- **config.c runtime lowering** — Implemented: DNS request generation, listen/serve/constraint/sensor lowering, rtable, query from
 
 ## Not yet wired
 
-- NTP poll loop, clock discipline, source selection, control socket, constraint validation, sensor framework, DNS, privsep
+- Full daemon event loop (poll/imsg dispatch)
+- Privilege separation (privsep fork + credential drop)
+- Actual NTP network queries (mode 3 client over UDP)
+- Full clock discipline (PLL/FLL via adjtimex)
+- Runtime DNS resolution (child process via imsg)
+- TLS constraint connections (constraint validation)
+- Sensor device I/O (read /dev/pps0)
+- Daemon mode background (-d)
+- Runtime privsep, SCM_RIGHTS, pledge/seccomp
 
 ## Platform gaps
 

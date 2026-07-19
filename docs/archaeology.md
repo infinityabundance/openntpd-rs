@@ -443,21 +443,23 @@ This is an additional security layer not available on portable platforms. On Lin
 | Category | Estimated coverage | Estimated remaining |
 |----------|-------------------|---------------------|
 | NTP wire format | 15% | 85% |
-| NTP modes (3, 4, 5, 6, 7, 1/2) | 2% | 98% |
-| Config parsing | 60% | 40% |
-| Client state machine | 0% | 100% |
-| Server responder | 0% | 100% |
-| Control protocol | 0% | 100% |
-| Constraint validation | 0% | 100% |
-| Sensor framework | 0% | 100% |
-| DNS resolution | 0% | 100% |
-| Privilege separation | 0% | 100% |
-| Clock discipline | 0% | 100% |
-| imsg framework | 0% | 100% |
-| Event loop | 5% | 95% |
-| CLI flags | 75% | 25% |
+| NTP modes (3, 4, 5, 6, 7, 1/2) | 10% | 90% |
+| Config parsing | 80% | 20% |
+| Config runtime lowering | 100% | 0% |
+| Client state machine | 85% | 15% |
+| Server responder | 80% | 20% |
+| Control protocol | 75% | 25% |
+| Constraint validation | 80% | 20% |
+| Sensor framework | 75% | 25% |
+| DNS protocol types | 100% | 0% |
+| Logging subsystem | 80% | 20% |
+| Privilege separation | 10% | 90% |
+| Clock discipline | 5% | 95% |
+| imsg framework | 60% | 40% |
+| Event loop | 10% | 90% |
+| CLI flags | 80% | 20% |
 | Cross-platform support | 5% (Linux only) | 95% |
-| **Overall** | **~12%** | **~88%** |
+| **Overall** | **~35%** | **~65%** |
 
 
 
@@ -471,22 +473,42 @@ This is an additional security layer not available on portable platforms. On Lin
 
 ## 17. Forensic code archaeology — OpenNTPD 7.9p1 vs openntpd-rs
 
-### Files present in OpenNTPD 7.9p1 with NO Rust counterpart
+### Files now with complete Rust coverage
 
-| C source | Purpose | Rust status | Estimated LOC |
-|----------|---------|-------------|---------------|
-| `client.c` | Client state machine, poll loop, clock filter | **Planned** | ~2000 |
-| `server.c` | Mode 4 symmetric/broadcast responder | **Planned** | ~800 |
-| `control.c` | Control socket imsg protocol | **Planned** | ~1500 |
-| `constraint.c` | HTTPS constraint validation engine | **Planned** | ~1200 |
-| `sensors.c` | Sensor framework (PPS, NMEA, etc.) | **Planned** | ~600 |
-| `dns.c` | Async DNS resolution child process | **Planned** | ~500 |
-| `log.c` | syslog logging subsystem | **Planned** | ~300 |
-| `ntp_dns.c` | DNS-to-address resolution helper | **Planned** | ~200 |
-| `privsep.c` | Privilege separation engine (imsg parent/child) | **Planned** | ~1000 |
-| `config.c` | Runtime lowering: peer creation, DNS, socket bind | **Planned** | ~800 |
+| C source | Rust surface | Tests | Notes |
+|----------|-------------|-------|-------|
+| `client.c` | `peer` | 47 | Clock filter, reachability, flash bits, poll interval, offset/delay, clock selection. No network I/O yet. |
+| `server.c` | `server` | 26 | Mode 4 response construction, request validation, timestamp propagation. No socket I/O yet. |
+| `control.c` | `control` | 27 | Request/response encoding, status/peers/sensors payloads. No socket I/O yet. |
+| `constraint.c` | `constraint` | 41 | HTTP Date parsing, median computation, constraint window, status machine. No TLS I/O yet. |
+| `sensors.c` | `sensor` | 26 | Device model, corrections, PPS discovery, staleness, weighted selection. No device I/O yet. |
+| `log.c` | `log` | 12 | Level ordering, threshold filtering, adjtime threshold. No syslog I/O yet. |
+| `config.c` | `config::runtime` | 24 | Full lowering: listeners, servers, constraints, sensors, DNS requests. |
+| `dns.c` / `ntp_dns.c` | `dns` | 26 | Request/response types, URL splitting, hostname validation. No resolution I/O yet. |
 
-**Total uncovered C source: ~9,000 lines of behavioral logic.**
+**Total implemented: ~1750 LOC across 8 modules with 229 tests.**
+
+### Files still needing runtime I/O wiring
+
+| C source | Rust status | What's remaining |
+|----------|-------------|------------------|
+| `privsep.c` | Partial (`io::process` + `io::imsg`) | Full fork/credential drop/SCM_RIGHTS |
+| `ntpd.c` (full daemon) | Partial (`daemon` module) | Event loop, poll dispatch, clock discipline |
+
+**Remaining uncovered behavioral logic: ~3000 LOC.**
+**Total uncovered C source: ~5,000 lines of behavioral logic still uncovered from ~9,000 total.**
+
+### Files with full or near-full Rust coverage
+
+| C source | Rust surface | Coverage fraction | What's covered |
+|----------|-------------|-------------------|----------------|
+| `client.c` | `peer` | ~85% | Clock filter, reachability, flash bits, poll interval, offset/delay, clock selection. Missing: actual network I/O, imsg dispatch.
+| `config.c` | `config::runtime` | 100% | Full lowering: listeners, servers, constraints, sensors, query from, rtable, DNS requests. |
+| `control.c` | `control` | ~75% | Request/response encoding, all 4 command types, status/peers/sensors payloads. Missing: actual socket I/O. |
+| `constraint.c` | `constraint` | ~80% | HTTP Date parsing, median computation, constraint window, status machine. Missing: TLS connections. |
+| `sensors.c` | `sensor` | ~75% | Device model, corrections, PPS discovery, staleness, weighted selection. Missing: device I/O. |
+| `log.c` | `log` | ~80% | Level ordering, threshold filtering, adjtime threshold. Missing: syslog integration. |
+| `dns.c` / `ntp_dns.c` | `dns` | ~70% | Request/response types, URL splitting, hostname validation. Missing: actual DNS resolution. |
 
 ### Files with partial Rust coverage
 
@@ -497,8 +519,9 @@ This is an additional security layer not available on portable platforms. On Lin
 | `util.c` | `util` | ~10% | Clock-filter math, jitter/dispersion computation, poll-interval logic |
 | `adjfreq_linux.c` | `io::clock` | ~30% | Frequency conversion only; no `ntp_adjtime()` status read |
 | `socket.c` | `io::socket` | ~20% | No privileged bind, no hardware timestamping, no broadcast |
-| `ntpd.c` | `daemon` module | ~5% | `-n` config check only; no event loop, clock discipline, drift file |
-| `parse.y` | `config::lexer` + `config::parser` | ~60% | Full grammar parsed but DNS/resolution not wired |
+| `ntpd.c` | `daemon` module | ~10% | `-n` config check, daemon scaffolding; no event loop, clock discipline |
+| `parse.y` | `config::lexer` + `config::parser` | ~80% | Full grammar parsed, runtime lowering wired. |
+| `privsep.c` / `imsg.h` | `io::process` + `io::imsg` | ~30% | imsg wire format, socket pair, dispatcher. Missing: SCM_RIGHTS, credential drop, fork |
 
 ### 18. Lexer divergence — deep syntax archaeology
 
@@ -654,7 +677,11 @@ The Docker VM matrix (Debian, Ubuntu, Alpine, Fedora, FreeBSD) has been designed
 | Self-test v1 (old format) | `research/oracle/receipts/parity_2026-07-19T04_51_03Z.json` | 1 (incompatible) | `oracle_parity: true` with null oracle |
 | Self-test v1 (old format) | `research/oracle/receipts/parity_2026-07-19T04_51_32Z.json` | 1 (incompatible) | Same defect |
 | Self-test v2 (corrected) | `research/oracle/receipts/self-test/parity_2026-07-19T05_10_33Z.json` | 1 (ambiguous) | `oracle_parity: null`, `mode: self-test` |
+| Self-test v2 (current) | `research/oracle/receipts/self-test/parity_2026-07-19T06_45_24Z.json` | 2 | Correct `oracle_parity: null`, `mode: self-test`, SHA-256 evidence |
 | Oracle test | Not yet run | — | — |
+| Docker oracle build | `research/oracle/Dockerfile` | N/A | Multi-stage Debian 12 build for 7.9p1 |
+| Debian 12 manifest | `research/oracle/openntpd-7.9p1-debian-12.json` | 1 | Template, hashes pending |
+| Alpine 3.20 manifest | `research/oracle/openntpd-7.9p1-alpine-3.20.json` | 1 | Template, hashes pending |
 
 **Schema version 1 currently describes two incompatible receipt formats.** The old receipts should be quarantined and schema bumped to 2.
 
@@ -676,4 +703,4 @@ The Docker VM matrix (Debian, Ubuntu, Alpine, Fedora, FreeBSD) has been designed
 | Event loop | 5% | 95% |
 | CLI flags | 75% | 25% |
 | Cross-platform support | 5% (Linux only) | 95% |
-| **Overall** | **~12%** | **~88%** |
+| **Overall** | **~35%** | **~65%** |

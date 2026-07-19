@@ -20,7 +20,7 @@
 
 use std::process::ExitCode;
 
-use openntpd_rs_d::{CliError, EXIT_ERROR, EXIT_UNIMPLEMENTED};
+use openntpd_rs_d::{CliError, DaemonConfig, EXIT_ERROR};
 
 const DEFAULT_CONFIG: &str = "/etc/ntpd.conf";
 
@@ -53,9 +53,24 @@ fn main() -> ExitCode {
         }
     }
 
+    let config_path = args
+        .config_path
+        .clone()
+        .unwrap_or_else(|| DEFAULT_CONFIG.into());
+
+    let daemon_config = DaemonConfig {
+        config_path: config_path.into(),
+        debug_mode: args.debug_mode,
+        verbose: args.verbose,
+        parent_proc: args.parent_proc.clone(),
+        pid_file: args.pid_file.clone(),
+    };
+
+    eprintln!("{prog}: OpenNTPD-rs (forensic reconstruction)");
+
     if args.config_test {
-        let config_path = args.config_path.as_deref().unwrap_or(DEFAULT_CONFIG);
-        let result = openntpd_rs_d::check_config_file(config_path);
+        // -n mode: config check only
+        let result = openntpd_rs_d::check_config_file(&daemon_config.config_path);
         if result.is_valid {
             eprintln!("configuration OK");
             ExitCode::SUCCESS
@@ -66,18 +81,11 @@ fn main() -> ExitCode {
             ExitCode::from(EXIT_ERROR)
         }
     } else {
-        let config_path = args.config_path.as_deref().unwrap_or(DEFAULT_CONFIG);
-        eprintln!("{prog}: OpenNTPD-rs (forensic reconstruction)");
-
-        if args.debug_mode {
-            eprintln!(
-                "{prog}: debug mode, config: {config_path}, verbosity: {}",
-                args.verbose
-            );
+        // Daemon mode (or other modes): use run_daemon
+        let result = openntpd_rs_d::run_daemon(&daemon_config);
+        if !result.message.is_empty() {
+            eprintln!("{prog}: {}", result.message);
         }
-
-        eprintln!("{prog}: daemon mode not yet implemented");
-        eprintln!("{prog}: exiting with code {EXIT_UNIMPLEMENTED}.");
-        ExitCode::from(EXIT_UNIMPLEMENTED)
+        ExitCode::from(result.exit_code)
     }
 }

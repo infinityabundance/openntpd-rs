@@ -344,9 +344,34 @@ fn surfaces() -> Vec<Surface> {
         },
         Surface {
             c_file: "config.c (lowering)",
-            rs_module: "config (planned)",
-            status: "Planned",
-            tests: &[],
+            rs_module: "config::runtime",
+            status: "Implemented — internally tested",
+            tests: &[
+                "runtime_empty_config",
+                "runtime_listen_wildcard",
+                "runtime_listen_wildcard_ipv6",
+                "runtime_listen_numeric",
+                "runtime_server_numeric",
+                "runtime_server_with_options",
+                "runtime_server_hostname",
+                "runtime_servers_pool",
+                "runtime_constraint_url_quoted",
+                "runtime_constraint_url_unquoted",
+                "runtime_constraint_pinned",
+                "runtime_constraint_numeric_host",
+                "runtime_sensor_all_options",
+                "runtime_sensor_minimal",
+                "runtime_sensor_with_path",
+                "runtime_query_from_ipv4",
+                "runtime_query_from_ipv6",
+                "runtime_rtable_preserved",
+                "runtime_multiple_directives",
+                "runtime_dns_id_uniqueness",
+                "runtime_invalid_config_graceful",
+                "runtime_server_with_dns",
+                "runtime_constraint_with_dns",
+                "runtime_sensor_refid_none",
+            ],
         },
         Surface {
             c_file: "ntpd.c (-n)",
@@ -379,20 +404,256 @@ fn surfaces() -> Vec<Surface> {
         Surface {
             c_file: "client.c",
             rs_module: "peer",
-            status: "Planned",
-            tests: &[],
+            status: "Implemented — internally tested",
+            tests: &[
+                "test_peer_defaults",
+                "test_peer_id_uniqueness",
+                "test_peer_trusted_flag",
+                "test_peer_trusted_default_false",
+                "test_filter_add_sample",
+                "test_filter_ring_buffer_wrap",
+                "test_filter_best_sample_empty",
+                "test_filter_best_sample_lowest_delay",
+                "test_filter_weighted_average_of_four",
+                "test_filter_dispersion_empty",
+                "test_filter_dispersion_computed",
+                "test_reach_all_zeros",
+                "test_reach_all_ones",
+                "test_reach_shift_behavior",
+                "test_reach_mixed_pattern",
+                "test_reach_ring_overflow",
+                "test_flash_set_clear_has",
+                "test_flash_combined_bits",
+                "test_flash_has_any",
+                "test_flash_all_bits_roundtrip",
+                "test_poll_rapid_phase",
+                "test_poll_stable_increase",
+                "test_poll_jitter_decrease",
+                "test_poll_backoff",
+                "test_poll_reset_after_max_unreachable",
+                "test_poll_clamped_to_min",
+                "test_poll_clamped_to_max",
+                "test_poll_state_recovers",
+                "test_poll_no_query_clears_reach",
+                "test_poll_consecutive_unreachable",
+                "test_offset_delay_symmetric",
+                "test_offset_delay_positive_offset",
+                "test_offset_delay_negative_offset",
+                "test_offset_delay_large_delay",
+                "test_selection_empty",
+                "test_selection_single_peer",
+                "test_selection_three_close_peers",
+                "test_selection_outlier_removal",
+                "test_selection_intersection_filters",
+                "test_selection_clustering_reduces_to_three",
+                "test_selection_weighted_combine",
+                "test_filter_wrapping",
+                "test_reach_overflow",
+                "test_poll_counting",
+                "test_poll_unreachable_tracking",
+                "test_wrong_f64_negative",
+                "test_full_peer_lifecycle",
+            ],
         },
         Surface {
             c_file: "server.c",
             rs_module: "server",
-            status: "Planned",
-            tests: &[],
+            status: "Implemented — internally tested",
+            tests: &[
+                "server_peer_defaults",
+                "server_peer_usage_tracking",
+                "validate_client_request_mode_3",
+                "validate_client_request_rejects_mode_1",
+                "validate_client_request_rejects_mode_2",
+                "validate_client_request_rejects_mode_4",
+                "validate_client_request_rejects_mode_5",
+                "validate_client_request_rejects_mode_6",
+                "validate_client_request_rejects_mode_7",
+                "validate_client_request_version_0_rejected",
+                "validate_client_request_version_5_rejected",
+                "validate_request_kiss_of_death",
+                "response_basic_mode_4",
+                "response_vn_propagated_from_request",
+                "response_stratum_propagated",
+                "response_poll_reflected",
+                "response_alarm_leap_indicator",
+                "response_root_delay_positive",
+                "response_root_delay_negative",
+                "response_reference_id_known_codes",
+                "response_timestamp_origin_from_request",
+                "response_timestamp_receive_from_recv_time",
+                "response_timestamp_transmit_from_recv_time",
+                "response_multi_request_independence",
+                "response_wire_roundtrip",
+                "response_zero_timestamps",
+            ],
         },
         Surface {
             c_file: "control.c",
             rs_module: "control",
-            status: "Planned",
-            tests: &[],
+            status: "Implemented — internally tested",
+            tests: &[
+                "control_req_status_encode_decode",
+                "control_req_peers_encode_decode",
+                "control_req_sensors_encode_decode",
+                "control_req_all_encode_decode",
+                "control_req_short_buffer",
+                "control_resp_status_roundtrip",
+                "control_resp_status_zero_values",
+                "control_resp_status_constrained",
+                "control_resp_status_short_buffer",
+                "control_resp_peers_roundtrip",
+                "control_resp_peers_empty",
+                "control_resp_peers_long_address",
+                "control_resp_peers_multiple",
+                "control_resp_sensors_roundtrip",
+                "control_resp_sensors_empty",
+                "control_resp_sensors_multiple",
+                "control_resp_all_composition",
+                "control_resp_truncated_decode",
+                "control_resp_decode_type_short",
+                "control_resp_decode_type_valid",
+                "control_invalid_sync_state",
+                "control_negative_offset_roundtrip",
+                "control_sync_state_display",
+                "control_decode_type_too_short",
+                "control_payload_decode_type_too_short",
+                "control_resp_decode_type_too_short",
+                "control_resp_decode_type_from_empty",
+            ],
+        },
+        Surface {
+            c_file: "constraint.c",
+            rs_module: "constraint",
+            status: "Implemented — internally tested",
+            tests: &[
+                "http_date_standard_format",
+                "http_date_single_digit_day",
+                "http_date_all_months",
+                "http_date_case_insensitive_month",
+                "http_date_missing_gmt",
+                "http_date_variable_whitespace",
+                "http_date_leap_year",
+                "http_date_non_leap_year",
+                "http_date_year_2000",
+                "http_date_year_2038",
+                "http_date_empty_string",
+                "http_date_garbage",
+                "http_date_iso_8601",
+                "http_date_invalid_month",
+                "http_date_invalid_hour",
+                "http_date_missing_tokens",
+                "median_odd_count",
+                "median_even_count",
+                "median_single_element",
+                "median_empty_list",
+                "median_skips_failed",
+                "median_skips_unknown",
+                "median_skips_none_date",
+                "window_zero",
+                "window_boundary",
+                "window_inside",
+                "window_outside",
+                "window_far_outside",
+                "constraint_construction_default",
+                "constraint_with_pinned_address",
+                "reasonable_date_current",
+                "reasonable_date_epoch",
+                "reasonable_date_before_1970_rejected",
+                "reasonable_date_after_2100_rejected",
+                "reasonable_date_year_2099",
+                "median_even_averages_middle",
+                "http_date_timezone_variants",
+                "constraint_status_order",
+                "constraint_status_default",
+                "constraint_status_transitions",
+                "is_within_constraint_edge_cases",
+            ],
+        },
+        Surface {
+            c_file: "sensors.c",
+            rs_module: "sensor",
+            status: "Implemented — internally tested",
+            tests: &[
+                "sensor_default_construction",
+                "sensor_zero_correction",
+                "sensor_positive_correction",
+                "sensor_negative_correction",
+                "sensor_multiple_readings",
+                "sensor_stale_detection",
+                "sensor_stale_no_reading",
+                "sensor_stale_boundary",
+                "sensor_mark_failed",
+                "sensor_readings_increment_count",
+                "sensor_pps_discovery_default",
+                "sensor_pps_discovery_custom",
+                "sensor_pps_discovery_zero",
+                "sensor_offset_zero_nanos",
+                "sensor_offset_negative_time",
+                "sensor_offset_negative_nanos",
+                "sensor_offset_large_correction",
+                "sensor_selection_empty",
+                "sensor_selection_single",
+                "sensor_selection_no_readings",
+                "sensor_selection_all_failed",
+                "sensor_selection_weighted",
+                "sensor_selection_zero_weight_fallback",
+                "sensor_selection_partial_eligibility",
+                "sensor_future_timestamp",
+                "sensor_i64_max_correction",
+            ],
+        },
+        Surface {
+            c_file: "dns.c",
+            rs_module: "dns",
+            status: "Implemented — internally tested",
+            tests: &[
+                "dns_request_creation",
+                "dns_response_success",
+                "dns_response_failure",
+                "dns_response_empty_addresses",
+                "dns_response_id_matches_request",
+                "dns_response_multiple_addresses",
+                "url_split_no_scheme",
+                "url_split_with_scheme",
+                "url_split_with_path",
+                "url_split_default_path",
+                "url_split_backslash_path",
+                "url_split_empty",
+                "url_split_https_only",
+                "hostname_valid_simple",
+                "hostname_valid_with_dots",
+                "hostname_valid_with_hyphens",
+                "hostname_rejected_empty",
+                "hostname_rejected_too_long",
+                "hostname_rejected_invalid_chars",
+                "hostname_rejected_leading_hyphen",
+                "hostname_rejected_trailing_dot",
+                "address_family_default",
+                "address_family_explicit",
+                "dns_request_id_uniqueness",
+                "dns_response_success_with_addresses",
+                "url_split_complex_url",
+            ],
+        },
+        Surface {
+            c_file: "log.c",
+            rs_module: "log",
+            status: "Implemented — internally tested",
+            tests: &[
+                "log_level_ordering",
+                "log_threshold_default",
+                "log_threshold_set_get",
+                "log_threshold_filters_above",
+                "adjtime_threshold_exact",
+                "adjtime_threshold_above",
+                "adjtime_threshold_below",
+                "adjtime_threshold_negative",
+                "log_message_creation",
+                "log_message_fields",
+                "log_debug_levels",
+                "log_threshold_reset",
+            ],
         },
     ]
 }
@@ -417,7 +678,9 @@ fn generate_port_parity(docs_gen: &Path) -> anyhow::Result<()> {
         ));
     }
     md.push('\n');
-    md.push_str(&format!("**Total project tests: {total} (+ 3 xtask harness)**\n\n"));
+    md.push_str(&format!(
+        "**Total project tests: {total} (+ 3 xtask harness)**\n\n"
+    ));
     md.push_str("## Status definitions\n\n");
     md.push_str("- **Implemented — internally tested**: Rust code exists, unit tests pass, but no oracle comparison has been run.\n");
     md.push_str("- **Implemented — unverified against oracle**: Rust code exists, has not been tested against the real ntpd.\n");
@@ -460,8 +723,21 @@ fn generate_negative_capabilities(docs_gen: &Path) -> anyhow::Result<()> {
     md.push_str(&format!(
         "| Config parser (`config::parser`) | {parser_tests}: directive grammar, option parsing, error recovery, constraint URL splitting, spans |\n"
     ));
+    md.push_str("| Config runtime lowering (`config::runtime`) | 24: listener creation, server config, constraint URL splitting, sensor config, query from, rtable, DNS requests |\n");
+    md.push_str("| NTP client state machine (`peer`) | 47: clock filter, reachability, flash bits, poll interval, offset/delay, clock selection |\n");
+    md.push_str("| NTP mode 4 server (`server`) | 26: request validation, response construction, timestamp propagation, wire roundtrip |\n");
+    md.push_str("| Control socket protocol (`control`) | 27: request/response encoding, status/peers/sensors payloads, all composition |\n");
+    md.push_str("| HTTPS constraint validation (`constraint`) | 41: HTTP Date parsing, median computation, constraint window, status transitions |\n");
+    md.push_str("| Sensor framework (`sensor`) | 26: device model, corrections, PPS discovery, staleness, weighted selection |\n");
+    md.push_str("| DNS protocol (`dns`) | 26: request/response types, URL splitting, hostname validation, address families |\n");
+    md.push_str(
+        "| Logging subsystem (`log`) | 12: log levels, threshold filtering, adjtime threshold |\n",
+    );
     md.push_str("| Clock adjfreq (`io::clock`) | 3: adjtimex conversion, overflow |\n");
-    md.push_str("| Socket loopback (`io::socket`) | 6: IPv4/v6, bind options, timestamp |\n\n");
+    md.push_str("| Socket loopback (`io::socket`) | 6: IPv4/v6, bind options, timestamp |\n");
+    md.push_str(
+        "| imsg framework (`io::imsg`) | 14: wire format, socket pair, dispatcher, handlers |\n\n",
+    );
 
     md.push_str(
         "## Implemented — unverified against oracle\n\n| Surface | Notes |\n|---------|-------|\n",
@@ -479,9 +755,25 @@ fn generate_negative_capabilities(docs_gen: &Path) -> anyhow::Result<()> {
     md.push_str(&format!(
         "- **parse.y parser** (`config::parser`) — Implemented, {parser_tests} tests: directive grammar, option parsing, end-of-line enforcement, error recovery, spans, constraint URL splitting, semantic validation\n"
     ));
-    md.push_str("- **config.c runtime lowering** — **Planned**: DNS resolution, peer creation\n\n");
+    md.push_str("- **config.c runtime lowering** — Implemented: DNS request generation, listen/serve/constraint/sensor lowering, rtable, query from
 
-    md.push_str("## Not yet wired\n\n- NTP poll loop, clock discipline, source selection, control socket, constraint validation, sensor framework, DNS, privsep\n\n");
+") ;
+
+    md.push_str(
+        "## Not yet wired
+
+- Full daemon event loop (poll/imsg dispatch)
+- Privilege separation (privsep fork + credential drop)
+- Actual NTP network queries (mode 3 client over UDP)
+- Full clock discipline (PLL/FLL via adjtimex)
+- Runtime DNS resolution (child process via imsg)
+- TLS constraint connections (constraint validation)
+- Sensor device I/O (read /dev/pps0)
+- Daemon mode background (-d)
+- Runtime privsep, SCM_RIGHTS, pledge/seccomp
+
+",
+    );
 
     md.push_str(
         "## Platform gaps\n\n| Platform | adjfreq | Status |\n|----------|---------|--------|\n",

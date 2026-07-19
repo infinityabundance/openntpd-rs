@@ -20,13 +20,17 @@ OpenNTPD 7.9p1 translation units and their Rust counterparts.
 | `socket (timestamping)` | `io::socket` | Implemented — unverified against oracle | — |
 | `parse.y (parser)` | `config::parser` | Implemented — internally tested | 60 |
 | `parse.y (lexer)` | `config::lexer` | Implemented — internally tested | 93 |
-| `config.c (lowering)` | `config (planned)` | Planned | — |
+| `config.c (lowering)` | `config::runtime` | Implemented — internally tested | 24 |
 | `ntpd.c (-n)` | `daemon` | Implemented — internally tested | 21 |
-| `client.c` | `peer` | Planned | — |
-| `server.c` | `server` | Planned | — |
-| `control.c` | `control` | Planned | — |
+| `client.c` | `peer` | Implemented — internally tested | 47 |
+| `server.c` | `server` | Implemented — internally tested | 26 |
+| `control.c` | `control` | Implemented — internally tested | 27 |
+| `constraint.c` | `constraint` | Implemented — internally tested | 41 |
+| `sensors.c` | `sensor` | Implemented — internally tested | 26 |
+| `dns.c` | `dns` | Implemented — internally tested | 26 |
+| `log.c` | `log` | Implemented — internally tested | 12 |
 
-**Total project tests: 246 (+ 3 xtask harness)**
+**Total project tests: 475 (+ 3 xtask harness)**
 
 ## Status definitions
 
