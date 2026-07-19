@@ -181,13 +181,20 @@ fn surfaces() -> Vec<Surface> {
             status: "Implemented — internally tested",
             tests: &[
                 "blank_lines",
-                "constraint_single",
-                "constraint_single_with_pinned",
-                "constraint_with_path",
-                "constraints_pool",
+                "constraint_from_quoted_https_url",
+                "constraint_from_url",
+                "constraint_https_url_defaults_path",
+                "constraint_invalid_pinned_discards_directive",
+                "constraint_requires_from",
+                "constraint_with_pinned",
+                "constraints_rejects_pinned",
+                "constraints_requires_from",
                 "directive_span",
                 "empty_config",
                 "error_skips_to_next_line",
+                "invalid_listen_rtable_discards_directive",
+                "invalid_sensor_option_discards_directive",
+                "invalid_server_weight_discards_directive",
                 "lexer_error_passthrough",
                 "listen_hostname",
                 "listen_missing_on",
@@ -197,11 +204,20 @@ fn surfaces() -> Vec<Surface> {
                 "query_from_hostname_rejected",
                 "query_from_ipv4",
                 "query_from_ipv6",
+                "query_trailing_token_discards_directive",
+                "rtable_u32_overflow_rejected",
+                "semantic_error_span_stratum",
+                "semantic_error_span_weight",
+                "sensor_adjacent_strings_rejected",
                 "sensor_all_options",
                 "sensor_invalid_correction",
                 "sensor_invalid_stratum",
                 "sensor_invalid_weight",
-                "sensor_minimal",
+                "sensor_number_rejected",
+                "sensor_quoted_path",
+                "sensor_single_name",
+                "sensor_unquoted_path_rejected",
+                "sensor_wildcard",
                 "server_invalid_weight_rejected",
                 "server_minimal",
                 "server_pool",
@@ -402,6 +418,9 @@ fn generate_negative_capabilities(docs_gen: &Path) -> anyhow::Result<()> {
     md.push_str(&format!(
         "| Config lexer (`config::lexer`) | {lexer_tests}: cursor, keywords, numbers, quoted strings, NUL rejection, continuation, recovery, char class, length boundaries, backslash handling, negative number limits, escaped-quote opening, spans |\n"
     ));
+    md.push_str(&format!(
+        "| Config parser (`config::parser`) | {parser_tests}: directive grammar, option parsing, error recovery, constraint URL splitting, spans |\n"
+    ));
     md.push_str("| Clock adjfreq (`io::clock`) | 3: adjtimex conversion, overflow |\n");
     md.push_str("| Socket loopback (`io::socket`) | 6: IPv4/v6, bind options, timestamp |\n\n");
 
@@ -419,7 +438,7 @@ fn generate_negative_capabilities(docs_gen: &Path) -> anyhow::Result<()> {
         "- **parse.y lexer** (`config::lexer`) — Implemented, {lexer_tests} tests: cursor, keywords, numbers, quoted strings, NUL rejection, backslash-newline, error recovery, char class, token length boundaries, negative number limits, escaped-quote opening, spans\n"
     ));
     md.push_str(&format!(
-        "- **parse.y parser** (`config::parser`) — Implemented, {parser_tests} tests: directive grammar, option parsing, end-of-line enforcement, error recovery, spans\n"
+        "- **parse.y parser** (`config::parser`) — Implemented, {parser_tests} tests: directive grammar, option parsing, end-of-line enforcement, error recovery, spans, constraint URL splitting, semantic validation\n"
     ));
     md.push_str("- **config.c runtime lowering** — **Planned**: DNS resolution, peer creation\n\n");
 

@@ -17,10 +17,11 @@
 //! | `util`                | Implemented — internally tested     |
 //! | `config` (AST types)  | Implemented — internally tested     |
 //! | `config` (lexer)      | Implemented — internally tested     |
+//! | `config` (parser)     | Implemented — internally tested     |
 //!
 //! ## Planned surfaces
 //!
-//! - `config` parser — directive grammar
+//! - `config` runtime lowering — DNS resolution, peer creation
 //! - `config` runtime lowering — DNS resolution, peer creation
 //! - `peer` — client state machine
 //! - `server` — NTP responder
