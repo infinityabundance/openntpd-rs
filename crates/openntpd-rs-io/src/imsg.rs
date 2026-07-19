@@ -24,7 +24,8 @@
 //! ```
 
 use std::io::{Read, Write};
-use std::os::unix::io::{AsRawFd, RawFd};
+use std::os::fd::{FromRawFd, IntoRawFd};
+use std::os::unix::io::{AsRawFd, OwnedFd, RawFd};
 use std::os::unix::net::UnixStream;
 
 // ---------------------------------------------------------------------------
@@ -49,6 +50,9 @@ pub const IMSG_CHILD_SHUTDOWN_ACK: u32 = 0x0f;
 
 /// Maximum imsg payload size (matching OpenNTPD's 8KB limit).
 pub const IMSG_MAX_PAYLOAD: usize = 8192;
+
+/// Maximum number of file descriptors that can be passed in one SCM_RIGHTS message.
+pub const MAX_SCM_RIGHTS_FDS: usize = 1;
 
 /// Human-readable name for each imsg type.
 pub fn imsg_type_name(type_: u32) -> &'static str {
@@ -168,6 +172,7 @@ impl Imsg {
 // ---------------------------------------------------------------------------
 
 /// An imsg socket wraps a `UnixStream` and provides framed send/recv.
+#[derive(Debug)]
 pub struct ImsgSocket {
     stream: UnixStream,
     read_buf: Vec<u8>,
@@ -252,13 +257,19 @@ impl ImsgSocket {
     }
 
     /// Send a file descriptor via SCM_RIGHTS alongside an imsg.
-    /// Note: This requires using sendmsg/recvmsg for ancillary data.
-    /// For simplicity, the current implementation sends the imsg only.
-    /// SCM_RIGHTS support will be added in a future phase.
-    pub fn send_with_fd(&mut self, msg: &Imsg, _fd: RawFd) -> Result<(), ImsgError> {
-        // Placeholder — SCM_RIGHTS requires sendmsg with ancillary data.
-        // For now, fall back to regular send.
-        self.send(msg)
+    pub fn send_with_fd(&mut self, msg: &Imsg, fd: RawFd) -> Result<(), ImsgError> {
+        send_imsg_with_fd(&mut self.stream, msg, fd)
+    }
+
+    /// Receive an imsg potentially accompanied by a file descriptor.
+    pub fn recv_with_fd(&mut self) -> Result<(Imsg, Option<RawFd>), ImsgError> {
+        recv_imsg_with_fd(&mut self.stream)
+    }
+
+    /// Get a mutable reference to the underlying UnixStream.
+    /// Useful for low-level operations like SCM_RIGHTS fd passing.
+    pub fn inner_stream(&mut self) -> &mut UnixStream {
+        &mut self.stream
     }
 }
 
@@ -299,6 +310,175 @@ impl std::fmt::Display for ImsgError {
 }
 
 impl std::error::Error for ImsgError {}
+
+// ---------------------------------------------------------------------------
+// SCM_RIGHTS file descriptor passing
+// ---------------------------------------------------------------------------
+
+/// Send an imsg with a file descriptor via SCM_RIGHTS ancillary data.
+///
+/// The imsg payload is sent as the message data (iov) and the file descriptor
+/// is sent in a control message (`cmsghdr` with `SOL_SOCKET`/`SCM_RIGHTS`).
+///
+/// # Safety
+///
+/// `fd` must be a valid, open file descriptor. The caller retains ownership
+/// of `fd` — this function only duplicates the reference for the receiver.
+pub fn send_imsg_with_fd(socket: &mut UnixStream, msg: &Imsg, fd: RawFd) -> Result<(), ImsgError> {
+    let bytes = msg.to_bytes();
+    let raw_fd = socket.as_raw_fd();
+
+    let mut iov = libc::iovec {
+        iov_base: bytes.as_ptr() as *mut libc::c_void,
+        iov_len: bytes.len(),
+    };
+
+    // Aligned control message buffer for one SCM_RIGHTS fd.
+    #[repr(C)]
+    union CmsgBuf {
+        align: libc::cmsghdr,
+        bytes: [u8; 64],
+    }
+    let mut cmsg_buf = CmsgBuf { bytes: [0u8; 64] };
+
+    // SAFETY: we write the cmsghdr into the buffer.
+    unsafe {
+        let cmsg_len = libc::CMSG_LEN(std::mem::size_of::<libc::c_int>() as _) as usize;
+        let cmsg = &mut *(&mut cmsg_buf.bytes[0] as *mut u8 as *mut libc::cmsghdr);
+        cmsg.cmsg_len = cmsg_len as _;
+        cmsg.cmsg_level = libc::SOL_SOCKET;
+        cmsg.cmsg_type = libc::SCM_RIGHTS;
+        // Copy the fd into the CMSG data area.
+        let data_ptr = libc::CMSG_DATA(cmsg) as *mut libc::c_int;
+        *data_ptr = fd;
+    }
+
+    let mut msg_hdr: libc::msghdr = unsafe { std::mem::zeroed() };
+    msg_hdr.msg_iov = &mut iov;
+    msg_hdr.msg_iovlen = 1;
+    // SAFETY: we initialized the cmsg buffer above.
+    msg_hdr.msg_control = unsafe { cmsg_buf.bytes.as_mut_ptr() as *mut libc::c_void };
+    msg_hdr.msg_controllen =
+        unsafe { libc::CMSG_SPACE(std::mem::size_of::<libc::c_int>() as _) as usize }; // SAFETY: fits in usize on all supported platforms
+
+    // SAFETY: sendmsg with valid fd, iov, and control message.
+    let ret = unsafe { libc::sendmsg(raw_fd, &msg_hdr, 0) };
+    if ret < 0 {
+        return Err(ImsgError::Io(std::io::Error::last_os_error()));
+    }
+
+    Ok(())
+}
+
+/// Receive an imsg potentially accompanied by a file descriptor via SCM_RIGHTS.
+///
+/// Returns the imsg and, if present, a received file descriptor.
+/// The caller takes ownership of the returned `RawFd` and must close it.
+/// If no SCM_RIGHTS ancillary data is present, returns `None` for the fd.
+pub fn recv_imsg_with_fd(socket: &mut UnixStream) -> Result<(Imsg, Option<RawFd>), ImsgError> {
+    let raw_fd = socket.as_raw_fd();
+    let mut buf = vec![0u8; IMSG_MAX_PAYLOAD + 12];
+    let mut received_fd: Option<OwnedFd> = None;
+
+    // Aligned control message buffer for receiving one SCM_RIGHTS fd.
+    #[repr(C)]
+    union CmsgBuf {
+        align: libc::cmsghdr,
+        bytes: [u8; 64],
+    }
+    let mut cmsg_buf = CmsgBuf { bytes: [0u8; 64] };
+    let cmsg_len = unsafe { libc::CMSG_SPACE(std::mem::size_of::<libc::c_int>() as _) as usize };
+
+    // Use recvmsg to potentially receive ancillary data (SCM_RIGHTS fd).
+    let mut iov = libc::iovec {
+        iov_base: buf.as_mut_ptr() as *mut libc::c_void,
+        iov_len: buf.len(),
+    };
+
+    let mut msg_hdr: libc::msghdr = unsafe { std::mem::zeroed() };
+    msg_hdr.msg_iov = &mut iov;
+    msg_hdr.msg_iovlen = 1;
+    // SAFETY: cmsg_buf is initialized (zeroed).
+    msg_hdr.msg_control = unsafe { cmsg_buf.bytes.as_mut_ptr() as *mut libc::c_void };
+    msg_hdr.msg_controllen = cmsg_len;
+
+    // SAFETY: recvmsg with valid fd and initialized msghdr.
+    let mut total_read: usize = loop {
+        let ret = unsafe { libc::recvmsg(raw_fd, &mut msg_hdr, 0) };
+        if ret < 0 {
+            let err = std::io::Error::last_os_error();
+            if err.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(ImsgError::Io(err));
+        }
+        if ret == 0 {
+            return Err(ImsgError::ConnectionClosed);
+        }
+        break ret as usize;
+    };
+
+    // Parse SCM_RIGHTS ancillary data from the first recvmsg.
+    // SAFETY: iterate CMSG headers using libc macros.
+    let mut cmsg: *mut libc::cmsghdr = unsafe { libc::CMSG_FIRSTHDR(&msg_hdr) };
+    while !cmsg.is_null() {
+        // SAFETY: cmsg is non-null and points within the control buffer.
+        let cm = unsafe { &*cmsg };
+        if cm.cmsg_level == libc::SOL_SOCKET && cm.cmsg_type == libc::SCM_RIGHTS {
+            let fd_len = cm.cmsg_len as usize - unsafe { libc::CMSG_LEN(0) as usize };
+            if fd_len >= std::mem::size_of::<libc::c_int>() && received_fd.is_none() {
+                // SAFETY: CMSG_DATA returns pointer to the fd data; length verified.
+                let fd_ptr = unsafe { libc::CMSG_DATA(cmsg) as *const libc::c_int };
+                // SAFETY: fd_ptr points to a valid fd.
+                let new_fd = unsafe { *fd_ptr };
+                // SAFETY: new_fd came from SCM_RIGHTS, we have ownership.
+                received_fd = Some(unsafe { OwnedFd::from_raw_fd(new_fd) });
+            }
+        }
+        // SAFETY: standard CMSG_NXTHDR iteration.
+        cmsg = unsafe { libc::CMSG_NXTHDR(&msg_hdr, cmsg) };
+    }
+
+    // If we don't have the full message yet, read remaining bytes with regular read.
+    // No more fds will arrive after the first recvmsg call.
+    if total_read < 12 {
+        while total_read < 12 {
+            let n = socket
+                .read(&mut buf[total_read..])
+                .map_err(|e| ImsgError::Io(e))?;
+            if n == 0 {
+                return Err(ImsgError::ConnectionClosed);
+            }
+            total_read += n;
+        }
+    }
+
+    // Parse header to get payload length.
+    let header_bytes: [u8; 12] = buf[..12].try_into().unwrap();
+    let header = ImsgHeader::from_bytes(&header_bytes);
+    header.validate()?;
+
+    let total_needed = 12 + header.length as usize;
+
+    // Read remaining payload if needed.
+    while total_read < total_needed {
+        let n = socket
+            .read(&mut buf[total_read..total_needed])
+            .map_err(|e| ImsgError::Io(e))?;
+        if n == 0 {
+            return Err(ImsgError::ConnectionClosed);
+        }
+        total_read += n;
+    }
+
+    let payload = buf[12..total_needed].to_vec();
+    let imsg = Imsg { header, payload };
+
+    // Convert OwnedFd to RawFd (caller takes ownership).
+    let fd = received_fd.map(|owned| owned.into_raw_fd());
+
+    Ok((imsg, fd))
+}
 
 // ---------------------------------------------------------------------------
 // ImsgHandler trait & ImsgDispatcher
@@ -634,5 +814,89 @@ mod tests {
         drop(a1);
         drop(a2);
         drop(dispatcher);
+    }
+
+    // -----------------------------------------------------------------------
+    // SCM_RIGHTS tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_scm_rights_send_recv_fd() {
+        use std::fs::File;
+        use std::os::unix::fs::MetadataExt;
+        use std::os::unix::io::FromRawFd;
+        use std::os::unix::io::IntoRawFd;
+
+        let (mut a, mut b) = UnixStream::pair().unwrap();
+
+        // Create a temporary file to get a real fd.
+        let file = File::create("/tmp/ntp_test_scm_fd").unwrap();
+        let fd = file.as_raw_fd();
+
+        let msg = Imsg::new(IMSG_PARENT_REQ_DNS, b"scm_rights_test".to_vec());
+        send_imsg_with_fd(&mut a, &msg, fd).unwrap();
+
+        let (received, received_fd) = recv_imsg_with_fd(&mut b).unwrap();
+
+        assert_eq!(received.header.type_, IMSG_PARENT_REQ_DNS);
+        assert_eq!(received.payload, b"scm_rights_test");
+        assert!(received_fd.is_some(), "expected a file descriptor");
+
+        // Verify we can use the received fd (e.g., by comparing stat info).
+        let rfd = received_fd.unwrap();
+        // SAFETY: rfd is a valid fd received via SCM_RIGHTS.
+        let received_file = unsafe { File::from_raw_fd(rfd) };
+
+        // Both should refer to the same file (same inode).
+        let meta_orig = file.metadata().unwrap();
+        let meta_recv = received_file.metadata().unwrap();
+        assert_eq!(meta_orig.ino(), meta_recv.ino(), "should be the same inode");
+
+        // Clean up: take back ownership of the fd from received_file so it
+        // doesn't close the dup on drop (we already leaked file.into_raw_fd).
+        let _ = received_file.into_raw_fd();
+        drop(file);
+        let _ = std::fs::remove_file("/tmp/ntp_test_scm_fd");
+    }
+
+    #[test]
+    fn test_scm_rights_no_fd_fallback() {
+        let (mut a, mut b) = UnixStream::pair().unwrap();
+
+        // Send a regular imsg without SCM_RIGHTS by writing directly
+        // to the stream (bypassing the SCM_RIGHTS path).
+        let msg = Imsg::new(IMSG_CHILD_REQ_TIME, b"no_fd".to_vec());
+        let bytes = msg.to_bytes();
+        std::io::Write::write_all(&mut a, &bytes).unwrap();
+
+        // Receive with recv_imsg_with_fd — should have no fd.
+        let (received, received_fd) = recv_imsg_with_fd(&mut b).unwrap();
+
+        assert_eq!(received.header.type_, IMSG_CHILD_REQ_TIME);
+        assert_eq!(received.payload, b"no_fd");
+        assert!(
+            received_fd.is_none(),
+            "no SCM_RIGHTS ancillary data should yield None"
+        );
+    }
+
+    #[test]
+    fn test_scm_rights_fd_roundtrip_no_ancillary() {
+        // Send imsg via regular ImsgSocket::send (no SCM_RIGHTS),
+        // then receive via recv_imsg_with_fd — should get no fd.
+        let (mut a, mut b) = ImsgSocket::pair().unwrap();
+
+        let msg = Imsg::new(IMSG_PARENT_DRIFT, b"drift data".to_vec());
+        a.send(&msg).unwrap();
+
+        // Use recv_imsg_with_fd on the underlying stream.
+        let (received, fd) = recv_imsg_with_fd(&mut b.inner_stream()).unwrap();
+
+        assert_eq!(received.header.type_, IMSG_PARENT_DRIFT);
+        assert_eq!(received.payload, b"drift data");
+        assert!(
+            fd.is_none(),
+            "no SCM_RIGHTS data should mean no fd received"
+        );
     }
 }

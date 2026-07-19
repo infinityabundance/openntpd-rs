@@ -64,28 +64,18 @@ fn main() -> ExitCode {
         verbose: args.verbose,
         parent_proc: args.parent_proc.clone(),
         pid_file: args.pid_file.clone(),
+        config_test: args.config_test,
     };
 
     eprintln!("{prog}: OpenNTPD-rs (forensic reconstruction)");
 
-    if args.config_test {
-        // -n mode: config check only
-        let result = openntpd_rs_d::check_config_file(&daemon_config.config_path);
-        if result.is_valid {
-            eprintln!("configuration OK");
-            ExitCode::SUCCESS
-        } else {
-            for err in &result.errors {
-                eprintln!("{prog}: {err}");
-            }
-            ExitCode::from(EXIT_ERROR)
-        }
-    } else {
-        // Daemon mode (or other modes): use run_daemon
-        let result = openntpd_rs_d::run_daemon(&daemon_config);
-        if !result.message.is_empty() {
-            eprintln!("{prog}: {}", result.message);
-        }
-        ExitCode::from(result.exit_code)
+    // Use run_daemon_full which dispatches to:
+    //   -n  → config test
+    //   -d  → foreground daemon
+    //   default → background daemon (fork + PID file)
+    let result = openntpd_rs_d::run_daemon_full(&daemon_config);
+    if !result.message.is_empty() {
+        eprintln!("{prog}: {}", result.message);
     }
+    ExitCode::from(result.exit_code)
 }

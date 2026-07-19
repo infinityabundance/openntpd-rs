@@ -17,6 +17,7 @@ use openntpd_rs_io::daemon::{
     create_signal_fd, read_signal, DriftFileManager, EventLoop, EventSource, NtpIo, PeerTarget,
     TimerAction,
 };
+use openntpd_rs_io::process;
 
 // ---------------------------------------------------------------------------
 // Exit codes
@@ -40,6 +41,7 @@ pub struct DaemonConfig {
     pub verbose: u8,
     pub parent_proc: Option<String>,
     pub pid_file: Option<String>,
+    pub config_test: bool,
 }
 
 /// Result of a daemon run.
@@ -97,6 +99,155 @@ pub fn run_daemon(config: &DaemonConfig) -> DaemonResult {
         }
     };
 
+    match ctx.run(config.debug_mode) {
+        Ok(()) => DaemonResult {
+            exit_code: 0,
+            message: "ntpd exited normally".into(),
+        },
+        Err(e) => DaemonResult {
+            exit_code: EXIT_ERROR,
+            message: e,
+        },
+    }
+}
+
+/// Run the daemon, with config-test and daemonization dispatch.
+///
+/// - `-n` (config_test) → run config check and exit.
+/// - `-d` (debug_mode)  → foreground mode, no daemonization fork.
+/// - Default            → background daemon (fork + PID file).
+pub fn run_daemon_full(config: &DaemonConfig) -> DaemonResult {
+    match config.config_test {
+        true => run_config_test(config),
+        false if config.debug_mode => run_daemon_foreground(config),
+        false => run_daemon_background(config),
+    }
+}
+
+/// Config check mode (`-n`): parse config, print result, exit.
+fn run_config_test(config: &DaemonConfig) -> DaemonResult {
+    let result = check_config_file(&config.config_path);
+    if result.is_valid {
+        DaemonResult {
+            exit_code: 0,
+            message: "configuration OK".into(),
+        }
+    } else {
+        let mut message = String::new();
+        for err in &result.errors {
+            message.push_str(err);
+            message.push('\n');
+        }
+        DaemonResult {
+            exit_code: EXIT_ERROR,
+            message,
+        }
+    }
+}
+
+/// Foreground daemon mode (`-d`): run event loop in the current process.
+fn run_daemon_foreground(config: &DaemonConfig) -> DaemonResult {
+    eprintln!(
+        "debug mode, config: {}, verbosity: {}",
+        config_path_display(&config.config_path),
+        config.verbose
+    );
+
+    // Validate config.
+    let check = check_config_file(&config.config_path);
+    if !check.is_valid {
+        let mut message = String::new();
+        for err in &check.errors {
+            message.push_str(err);
+            message.push('\n');
+        }
+        return DaemonResult {
+            exit_code: EXIT_CONFIG,
+            message,
+        };
+    }
+
+    // Read config bytes for runtime lowering.
+    let bytes = match std::fs::read(&config.config_path) {
+        Ok(b) => b,
+        Err(e) => {
+            return DaemonResult {
+                exit_code: EXIT_ERROR,
+                message: format!("cannot read config: {e}"),
+            };
+        }
+    };
+
+    run_daemon_foreground_inner(config, &bytes)
+}
+
+/// Background daemon mode: daemonize (double-fork), write PID file,
+/// then run the event loop in the child process.
+fn run_daemon_background(config: &DaemonConfig) -> DaemonResult {
+    // Validate config BEFORE daemonizing so the parent can report errors.
+    let check = check_config_file(&config.config_path);
+    if !check.is_valid {
+        let mut message = String::new();
+        for err in &check.errors {
+            message.push_str(err);
+            message.push('\n');
+        }
+        return DaemonResult {
+            exit_code: EXIT_CONFIG,
+            message,
+        };
+    }
+
+    // Read config bytes before fork so we don't depend on post-fork I/O.
+    let bytes = match std::fs::read(&config.config_path) {
+        Ok(b) => b,
+        Err(e) => {
+            return DaemonResult {
+                exit_code: EXIT_ERROR,
+                message: format!("cannot read config: {e}"),
+            };
+        }
+    };
+
+    // Daemonize (double-fork).
+    // SAFETY: daemonize() calls fork()/setsid()/fork()/chdir() which
+    // are the standard double-fork daemonization sequence.
+    unsafe {
+        if let Err(e) = process::daemonize(false) {
+            return DaemonResult {
+                exit_code: EXIT_ERROR,
+                message: format!("daemonize failed: {e}"),
+            };
+        }
+    }
+
+    // Write PID file (child process after fork).
+    if let Some(ref pid_path) = config.pid_file {
+        if let Err(e) = process::write_pid_file(Path::new(pid_path)) {
+            return DaemonResult {
+                exit_code: EXIT_ERROR,
+                message: format!("write PID file '{pid_path}': {e}"),
+            };
+        }
+    }
+
+    run_daemon_foreground_inner(config, &bytes)
+}
+
+/// Shared inner: lower config bytes and run the event loop.
+fn run_daemon_foreground_inner(config: &DaemonConfig, bytes: &[u8]) -> DaemonResult {
+    let mut ctx = match DaemonContext::new(bytes) {
+        Ok(ctx) => ctx,
+        Err(e) => {
+            return DaemonResult {
+                exit_code: EXIT_CONFIG,
+                message: e,
+            };
+        }
+    };
+
+    // In foreground mode, debug_mode is always true since -d is required.
+    // In background mode, debug_mode is false (production paths).
     match ctx.run(config.debug_mode) {
         Ok(()) => DaemonResult {
             exit_code: 0,
@@ -1034,6 +1185,7 @@ mod tests {
             verbose: 0,
             parent_proc: None,
             pid_file: None,
+            config_test: false,
         };
         let result = run_daemon(&config);
         assert_eq!(result.exit_code, EXIT_CONFIG);
@@ -1052,6 +1204,7 @@ mod tests {
             verbose: 0,
             parent_proc: None,
             pid_file: None,
+            config_test: false,
         };
         let result = run_daemon(&config);
         // Should error because no servers are configured.
@@ -1223,5 +1376,200 @@ mod tests {
     fn cli_pid_file() {
         let (args, _) = parse_args_from(["ntpd", "-p", "/var/run/ntpd.pid"]).unwrap();
         assert_eq!(args.pid_file, Some("/var/run/ntpd.pid".into()));
+    }
+
+    // -- run_daemon_full dispatch --
+
+    #[test]
+    fn run_daemon_full_config_test_with_invalid_file() {
+        // -n mode with nonexistent file → EXIT_CONFIG (config check error).
+        let config = DaemonConfig {
+            config_path: PathBuf::from("/nonexistent/ntpd_config_test.conf"),
+            debug_mode: false,
+            verbose: 0,
+            parent_proc: None,
+            pid_file: None,
+            config_test: true,
+        };
+        let result = run_daemon_full(&config);
+        assert_eq!(result.exit_code, EXIT_ERROR);
+        assert!(!result.message.is_empty());
+    }
+
+    #[test]
+    fn run_daemon_full_foreground_with_invalid_file() {
+        // -d mode with nonexistent file → EXIT_CONFIG (config check before
+        // any daemonization).
+        let config = DaemonConfig {
+            config_path: PathBuf::from("/nonexistent/ntpd_foreground_test.conf"),
+            debug_mode: true,
+            verbose: 0,
+            parent_proc: None,
+            pid_file: None,
+            config_test: false,
+        };
+        let result = run_daemon_full(&config);
+        assert_eq!(result.exit_code, EXIT_CONFIG);
+    }
+
+    #[test]
+    fn run_daemon_full_background_with_invalid_file_does_not_fork() {
+        // Default mode with nonexistent file → should fail at config check
+        // BEFORE daemonize() is called, so no fork occurs.
+        let config = DaemonConfig {
+            config_path: PathBuf::from("/nonexistent/ntpd_background_test.conf"),
+            debug_mode: false,
+            verbose: 0,
+            parent_proc: None,
+            pid_file: None,
+            config_test: false,
+        };
+        let result = run_daemon_full(&config);
+        assert_eq!(result.exit_code, EXIT_CONFIG);
+    }
+
+    #[test]
+    fn run_daemon_full_foreground_with_no_servers_errors() {
+        // -d mode with valid config that has no servers.
+        let dir = std::env::temp_dir();
+        let path = dir.join("ntpd_full_foreground_empty.conf");
+        std::fs::write(&path, b"listen on *\n").unwrap();
+
+        let config = DaemonConfig {
+            config_path: path.clone(),
+            debug_mode: true,
+            verbose: 0,
+            parent_proc: None,
+            pid_file: None,
+            config_test: false,
+        };
+        let result = run_daemon_full(&config);
+        // No servers should produce an error.
+        assert_eq!(result.exit_code, EXIT_ERROR);
+        assert!(
+            result.message.contains("no servers configured") || result.message.contains("error")
+        );
+
+        std::fs::remove_file(&path).unwrap_or(());
+    }
+
+    #[test]
+    fn run_daemon_full_foreground_with_servers_ok() {
+        // -d mode with a valid config that has servers.
+        // The event loop will start but immediately find no peers to
+        // query and exit — that's fine, we just verify no crash and
+        // the exit code is 0.
+        let dir = std::env::temp_dir();
+        let path = dir.join("ntpd_full_foreground_ok.conf");
+        std::fs::write(&path, b"listen on *\nserver 127.0.0.1\n").unwrap();
+
+        let config = DaemonConfig {
+            config_path: path.clone(),
+            debug_mode: true,
+            verbose: 0,
+            parent_proc: None,
+            pid_file: None,
+            config_test: false,
+        };
+        let result = run_daemon_full(&config);
+        // The event loop should run and exit normally (exit 0) if running
+        // as root and NTP port 123 can be bound.  Non-root test runners
+        // will see EXIT_ERROR from the bind attempt, which is acceptable.
+        assert!(
+            result.exit_code == 0 || result.exit_code == EXIT_ERROR,
+            "expected exit 0 (root) or {} (non-root, bind error), got {}",
+            EXIT_ERROR,
+            result.exit_code
+        );
+
+        std::fs::remove_file(&path).unwrap_or(());
+    }
+
+    #[test]
+    fn run_daemon_full_foreground_unreadable_config() {
+        // -d mode with an unreadable config file (e.g. a directory).
+        let dir = std::env::temp_dir();
+        let path = dir.join("ntpd_full_unreadable_dir");
+        std::fs::create_dir_all(&path).unwrap();
+
+        let config = DaemonConfig {
+            config_path: path.clone(),
+            debug_mode: true,
+            verbose: 0,
+            parent_proc: None,
+            pid_file: None,
+            config_test: false,
+        };
+        let result = run_daemon_full(&config);
+        assert_eq!(result.exit_code, EXIT_CONFIG);
+        assert!(!result.message.is_empty());
+
+        std::fs::remove_dir_all(&path).unwrap_or(());
+    }
+
+    #[test]
+    fn run_daemon_full_config_test_with_valid_config_returns_ok() {
+        // -n mode with a valid config should return success.
+        let dir = std::env::temp_dir();
+        let path = dir.join("ntpd_full_config_test_ok.conf");
+        std::fs::write(&path, b"listen on *\n").unwrap();
+
+        let config = DaemonConfig {
+            config_path: path.clone(),
+            debug_mode: false,
+            verbose: 0,
+            parent_proc: None,
+            pid_file: None,
+            config_test: true,
+        };
+        let result = run_daemon_full(&config);
+        assert_eq!(result.exit_code, 0);
+
+        std::fs::remove_file(&path).unwrap_or(());
+    }
+
+    #[test]
+    fn run_daemon_full_config_test_with_invalid_config_returns_errors() {
+        // -n mode with an invalid config should return EXIT_CONFIG with
+        // error messages.
+        let dir = std::env::temp_dir();
+        let path = dir.join("ntpd_full_config_test_invalid.conf");
+        std::fs::write(&path, b"listen on *\nserver pool.ntp.org weight 100\n").unwrap();
+
+        let config = DaemonConfig {
+            config_path: path.clone(),
+            debug_mode: false,
+            verbose: 0,
+            parent_proc: None,
+            pid_file: None,
+            config_test: true,
+        };
+        let result = run_daemon_full(&config);
+        assert_eq!(result.exit_code, EXIT_ERROR);
+        assert!(!result.message.is_empty());
+
+        std::fs::remove_file(&path).unwrap_or(());
+    }
+
+    #[test]
+    fn run_daemon_foreground_invalid_config_parse_error() {
+        // Foreground mode with config that has a parse error.
+        let dir = std::env::temp_dir();
+        let path = dir.join("ntpd_foreground_parse_error.conf");
+        std::fs::write(&path, b"listen on *\nserver invalid-weight)conf\n").unwrap();
+
+        let config = DaemonConfig {
+            config_path: path.clone(),
+            debug_mode: true,
+            verbose: 0,
+            parent_proc: None,
+            pid_file: None,
+            config_test: false,
+        };
+        let result = run_daemon_full(&config);
+        assert_eq!(result.exit_code, EXIT_CONFIG);
+        assert!(!result.message.is_empty());
+
+        std::fs::remove_file(&path).unwrap_or(());
     }
 }
