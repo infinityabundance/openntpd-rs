@@ -22,7 +22,6 @@
 //! ## Planned surfaces
 //!
 //! - `config` runtime lowering — DNS resolution, peer creation
-//! - `config` runtime lowering — DNS resolution, peer creation
 //! - `peer` — client state machine
 //! - `server` — NTP responder
 //! - `control` — imsg protocol

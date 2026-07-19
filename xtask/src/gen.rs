@@ -349,10 +349,17 @@ fn surfaces() -> Vec<Surface> {
             tests: &[],
         },
         Surface {
-            c_file: "ntpd.c",
+            c_file: "ntpd.c (-n)",
             rs_module: "daemon",
-            status: "Scaffold",
-            tests: &[],
+            status: "Implemented — internally tested",
+            tests: &[
+                "valid_config_returns_ok",
+                "invalid_config_returns_errors",
+                "empty_config_is_valid",
+                "parser_error_reported",
+                "multiple_errors_collected",
+                "config_test_exit_code",
+            ],
         },
         Surface {
             c_file: "client.c",
@@ -444,7 +451,7 @@ fn generate_negative_capabilities(docs_gen: &Path) -> anyhow::Result<()> {
     md.push_str(
         "## Implemented — unverified against oracle\n\n| Surface | Notes |\n|---------|-------|\n",
     );
-    md.push_str("| ntpd CLI | Flags parsed; fail-closed exit 78. No behavioral tests. |\n");
+    md.push_str("| ntpd CLI | Flags parsed; fail-closed exit 78. -n mode implements config check with 6 tests. |\n");
     md.push_str("| ntpctl CLI | Prefix matching; ambiguity rejection. |\n");
     md.push_str("| adjtime_oss (`io::clock`) | No dedicated test. |\n");
     md.push_str("| Process (`io::process`) | No runtime credential test. |\n");
