@@ -33,7 +33,9 @@
 //! | Receive timestamp       | time the request was received         |
 //! | Transmit timestamp      | time the response is sent             |
 
-use crate::ntp::{mode, NtpPacket, NtpShortSigned, NtpShortUnsigned, NtpTimestamp, NTP_VERSION};
+use crate::ntp::{
+    li, mode, NtpPacket, NtpShortSigned, NtpShortUnsigned, NtpTimestamp, NTP_VERSION,
+};
 
 use core::fmt;
 
@@ -208,14 +210,115 @@ fn f64_to_short_unsigned(v: f64) -> NtpShortUnsigned {
 }
 
 // ---------------------------------------------------------------------------
+// Server status (system state for response construction)
+// ---------------------------------------------------------------------------
+
+/// System clock status used when building server responses.
+///
+/// Corresponds to `struct ntp_status` in OpenNTPD's `ntpd.h`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ServerStatus {
+    /// Whether the clock is synchronized to an upstream source.
+    pub synced: bool,
+    /// Leap indicator (0–3).
+    pub leap: u8,
+    /// System stratum (0 = unsynchronized, 1 = primary, 2+ = secondary).
+    pub stratum: u8,
+    /// System precision in log₂ seconds.
+    pub precision: i8,
+    /// Reference timestamp (NTP seconds since 1900).
+    pub reftime: f64,
+    /// Root delay in seconds.
+    pub rootdelay: f64,
+    /// Reference ID as a `u32`.
+    pub refid: u32,
+}
+
+impl ServerStatus {
+    /// Create a new `ServerStatus` with default (unsynchronized) values.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            synced: false,
+            leap: li::ALARM,
+            stratum: 0,
+            precision: 0,
+            reftime: 0.0,
+            rootdelay: 0.0,
+            refid: 0,
+        }
+    }
+}
+
+impl Default for ServerStatus {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Server dispatch — build mode 4 response
+// ---------------------------------------------------------------------------
+
+/// Dispatch an incoming server query and build the appropriate mode 4
+/// (server) or mode 2 (symmetric passive) response.
+///
+/// Corresponds to OpenNTPD's `server_dispatch()` in `server.c`.
+///
+/// # Logic (matching C source)
+///
+/// 1. If the system is **not** synchronized, set LI = ALARM (3).
+/// 2. Copy the version number from the request.
+/// 3. If the request is `MODE_CLIENT` (3), respond with `MODE_SERVER` (4).
+/// 4. If the request is `MODE_SYM_ACT` (1), respond with `MODE_SYM_PAS` (2).
+/// 5. For any other mode, return `None` (packet is ignored).
+/// 6. Fill response fields from `ServerStatus`.
+#[must_use]
+pub fn server_dispatch(
+    request: &NtpPacket,
+    recv_time: f64,
+    system_status: &ServerStatus,
+) -> Option<NtpPacket> {
+    let req_mode = request.mode();
+    let resp_mode = match req_mode {
+        mode::CLIENT => mode::SERVER,
+        mode::SYMMETRIC_ACTIVE => mode::SYMMETRIC_PASSIVE,
+        _ => return None, // ignore all other modes (e.g. broadcast)
+    };
+
+    let leap = if system_status.synced {
+        system_status.leap
+    } else {
+        li::ALARM
+    };
+
+    let vn = request.version();
+
+    let response = NtpPacket {
+        li_vn_mode: (leap << 6) | ((vn & 0x07) << 3) | resp_mode,
+        stratum: system_status.stratum,
+        poll: request.poll,
+        precision: system_status.precision,
+        root_delay: f64_to_short_signed(system_status.rootdelay),
+        root_dispersion: f64_to_short_unsigned(0.0),
+        reference_id: system_status.refid.to_be_bytes(),
+        reference_ts: NtpTimestamp::from_f64(system_status.reftime),
+        origin_ts: request.transmit_ts,
+        receive_ts: NtpTimestamp::from_f64(recv_time),
+        transmit_ts: NtpTimestamp::from_f64(recv_time),
+    };
+
+    Some(response)
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ntp::li;
-    use crate::ntp::NtpTimestamp;
+    use crate::ntp::{li, mode, NtpTimestamp, NTP_VERSION};
 
     // -----------------------------------------------------------------------
     // ServerPeer tests
@@ -820,5 +923,317 @@ mod tests {
         let err = ServerError::KissOfDeath;
         let msg = alloc::format!("{err}");
         assert!(msg.contains("kiss-o'-death"));
+    }
+
+    // -----------------------------------------------------------------------
+    // ServerStatus tests
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_server_status_defaults() {
+        let status = ServerStatus::new();
+        assert!(!status.synced);
+        assert_eq!(status.leap, li::ALARM);
+        assert_eq!(status.stratum, 0);
+        assert_eq!(status.precision, 0);
+        assert_eq!(status.reftime, 0.0);
+        assert_eq!(status.rootdelay, 0.0);
+        assert_eq!(status.refid, 0);
+    }
+
+    #[test]
+    fn test_server_status_default_impl() {
+        let status = ServerStatus::default();
+        assert_eq!(status.synced, ServerStatus::new().synced);
+    }
+
+    #[test]
+    fn test_server_status_custom() {
+        let status = ServerStatus {
+            synced: true,
+            leap: li::NO_WARNING,
+            stratum: 2,
+            precision: -18,
+            reftime: 3_900_000_000.0,
+            rootdelay: 0.025,
+            refid: 0x47505300,
+        };
+        assert!(status.synced);
+        assert_eq!(status.leap, 0);
+        assert_eq!(status.stratum, 2);
+    }
+
+    // -----------------------------------------------------------------------
+    // server_dispatch tests
+    // -----------------------------------------------------------------------
+
+    /// Build a minimal client request.
+    fn make_request(vn: u8, md: u8, poll: i8, xmit_secs: u32) -> NtpPacket {
+        let mut pkt = NtpPacket::zero();
+        pkt.set_li_vn_mode(li::NO_WARNING, vn, md);
+        pkt.stratum = 3;
+        pkt.poll = poll;
+        pkt.precision = -18;
+        pkt.transmit_ts = NtpTimestamp::new(xmit_secs, 0);
+        pkt
+    }
+
+    fn synced_status() -> ServerStatus {
+        ServerStatus {
+            synced: true,
+            leap: li::NO_WARNING,
+            stratum: 2,
+            precision: -20,
+            reftime: 3_900_000_000.0,
+            rootdelay: 0.015,
+            refid: 0x47505300,
+        }
+    }
+
+    #[test]
+    fn test_server_dispatch_mode_client() {
+        let req = make_request(NTP_VERSION, mode::CLIENT, 6, 1_000_000);
+        let status = synced_status();
+        let resp = server_dispatch(&req, 1_000_001.5, &status).unwrap();
+
+        assert_eq!(resp.mode(), mode::SERVER);
+        assert_eq!(resp.version(), NTP_VERSION);
+        assert_eq!(resp.leap_indicator(), li::NO_WARNING);
+        assert_eq!(resp.stratum, 2);
+        assert_eq!(resp.poll, 6);
+        assert_eq!(resp.precision, -20);
+        // Origin echoes client's transmit timestamp
+        assert_eq!(resp.origin_ts, req.transmit_ts);
+    }
+
+    #[test]
+    fn test_server_dispatch_mode_symmetric_active() {
+        let req = make_request(NTP_VERSION, mode::SYMMETRIC_ACTIVE, 6, 1_000_000);
+        let status = synced_status();
+        let resp = server_dispatch(&req, 1_000_001.5, &status).unwrap();
+
+        assert_eq!(resp.mode(), mode::SYMMETRIC_PASSIVE);
+        assert_eq!(resp.version(), NTP_VERSION);
+    }
+
+    #[test]
+    fn test_server_dispatch_alarm_when_unsynced() {
+        let req = make_request(NTP_VERSION, mode::CLIENT, 6, 1_000_000);
+        let status = ServerStatus::new(); // unsynced by default
+        let resp = server_dispatch(&req, 1_000_001.5, &status).unwrap();
+
+        assert_eq!(resp.leap_indicator(), li::ALARM);
+        assert_eq!(resp.stratum, 0);
+    }
+
+    #[test]
+    fn test_server_dispatch_ignores_broadcast() {
+        let req = make_request(NTP_VERSION, mode::BROADCAST, 6, 1_000_000);
+        let status = synced_status();
+        assert!(server_dispatch(&req, 1_000_001.5, &status).is_none());
+    }
+
+    #[test]
+    fn test_server_dispatch_ignores_control() {
+        let req = make_request(NTP_VERSION, mode::CONTROL, 6, 1_000_000);
+        let status = synced_status();
+        assert!(server_dispatch(&req, 1_000_001.5, &status).is_none());
+    }
+
+    #[test]
+    fn test_server_dispatch_ignores_private() {
+        let req = make_request(NTP_VERSION, mode::PRIVATE, 6, 1_000_000);
+        let status = synced_status();
+        assert!(server_dispatch(&req, 1_000_001.5, &status).is_none());
+    }
+
+    #[test]
+    fn test_server_dispatch_ignores_server_mode() {
+        let req = make_request(NTP_VERSION, mode::SERVER, 6, 1_000_000);
+        let status = synced_status();
+        assert!(server_dispatch(&req, 1_000_001.5, &status).is_none());
+    }
+
+    #[test]
+    fn test_server_dispatch_version_propagated_v3() {
+        let req = make_request(3, mode::CLIENT, 6, 1_000_000);
+        let status = synced_status();
+        let resp = server_dispatch(&req, 1_000_001.5, &status).unwrap();
+        assert_eq!(resp.version(), 3);
+    }
+
+    #[test]
+    fn test_server_dispatch_version_propagated_v4() {
+        let req = make_request(NTP_VERSION, mode::CLIENT, 6, 1_000_000);
+        let status = synced_status();
+        let resp = server_dispatch(&req, 1_000_001.5, &status).unwrap();
+        assert_eq!(resp.version(), NTP_VERSION);
+    }
+
+    #[test]
+    fn test_server_dispatch_root_delay_propagated() {
+        let req = make_request(NTP_VERSION, mode::CLIENT, 6, 1_000_000);
+        let status = ServerStatus {
+            synced: true,
+            leap: li::NO_WARNING,
+            stratum: 2,
+            precision: -20,
+            reftime: 3_900_000_000.0,
+            rootdelay: 0.125,
+            refid: 0x47505300,
+        };
+        let resp = server_dispatch(&req, 1_000_001.5, &status).unwrap();
+        let delay = resp.root_delay.to_f64();
+        assert!((delay - 0.125).abs() < 0.000_02);
+    }
+
+    #[test]
+    fn test_server_dispatch_refid_propagated() {
+        let req = make_request(NTP_VERSION, mode::CLIENT, 6, 1_000_000);
+        let status = ServerStatus {
+            synced: true,
+            leap: li::NO_WARNING,
+            stratum: 2,
+            precision: -20,
+            reftime: 3_900_000_000.0,
+            rootdelay: 0.015,
+            refid: 0x4C4F434C, // "LOCL"
+        };
+        let resp = server_dispatch(&req, 1_000_001.5, &status).unwrap();
+        assert_eq!(resp.reference_id, [0x4C, 0x4F, 0x43, 0x4C]);
+    }
+
+    #[test]
+    fn test_server_dispatch_refid_zero() {
+        let req = make_request(NTP_VERSION, mode::CLIENT, 6, 1_000_000);
+        let status = ServerStatus {
+            synced: true,
+            leap: li::NO_WARNING,
+            stratum: 1,
+            precision: -20,
+            reftime: 3_900_000_000.0,
+            rootdelay: 0.0,
+            refid: 0,
+        };
+        let resp = server_dispatch(&req, 1_000_001.5, &status).unwrap();
+        assert_eq!(resp.reference_id, [0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn test_server_dispatch_precision_propagated() {
+        let req = make_request(NTP_VERSION, mode::CLIENT, 6, 1_000_000);
+        let status = ServerStatus {
+            synced: true,
+            leap: li::NO_WARNING,
+            stratum: 2,
+            precision: -18,
+            reftime: 3_900_000_000.0,
+            rootdelay: 0.015,
+            refid: 0,
+        };
+        let resp = server_dispatch(&req, 1_000_001.5, &status).unwrap();
+        assert_eq!(resp.precision, -18);
+    }
+
+    #[test]
+    fn test_server_dispatch_reftime_propagated() {
+        let req = make_request(NTP_VERSION, mode::CLIENT, 6, 1_000_000);
+        let status = ServerStatus {
+            synced: true,
+            leap: li::NO_WARNING,
+            stratum: 2,
+            precision: -20,
+            reftime: 3_900_000_000.5,
+            rootdelay: 0.015,
+            refid: 0x47505300,
+        };
+        let resp = server_dispatch(&req, 1_000_001.5, &status).unwrap();
+        // The reference timestamp is written as NtpTimestamp
+        let ref_ts = resp.reference_ts.to_f64();
+        assert!((ref_ts - 3_900_000_000.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_server_dispatch_origin_echo() {
+        let req = make_request(NTP_VERSION, mode::CLIENT, 6, 42_000_000);
+        let status = synced_status();
+        let resp = server_dispatch(&req, 1_000_001.5, &status).unwrap();
+        // Origin timestamp must echo client's transmit timestamp
+        assert_eq!(resp.origin_ts, req.transmit_ts);
+    }
+
+    #[test]
+    fn test_server_dispatch_receive_transmit_timestamps() {
+        let req = make_request(NTP_VERSION, mode::CLIENT, 6, 1_000_000);
+        let status = synced_status();
+        let resp = server_dispatch(&req, 1_000_001.5, &status).unwrap();
+        // Receive and transmit timestamps are set to recv_time
+        let recv = resp.receive_ts.to_f64();
+        let xmit = resp.transmit_ts.to_f64();
+        assert!((recv - 1_000_001.5).abs() < 0.001);
+        assert!((xmit - 1_000_001.5).abs() < 0.001);
+    }
+
+    // -----------------------------------------------------------------------
+    // Edge cases for server_dispatch
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_server_dispatch_mode_reserved_ignored() {
+        let req = make_request(NTP_VERSION, mode::RESERVED, 6, 1_000_000);
+        let status = synced_status();
+        assert!(server_dispatch(&req, 1_000_001.5, &status).is_none());
+    }
+
+    #[test]
+    fn test_server_dispatch_unsynced_leap_alarm_propagates() {
+        // Even with synced=false and a custom leap value, LI must be ALARM
+        let req = make_request(NTP_VERSION, mode::CLIENT, 6, 1_000_000);
+        let status = ServerStatus {
+            synced: false,
+            leap: li::NO_WARNING, // would be NO_WARNING, but overridden
+            stratum: 0,
+            precision: -20,
+            reftime: 0.0,
+            rootdelay: 0.0,
+            refid: 0,
+        };
+        let resp = server_dispatch(&req, 1_000_001.5, &status).unwrap();
+        assert_eq!(resp.leap_indicator(), li::ALARM);
+    }
+
+    // -----------------------------------------------------------------------
+    // Roundtrip: validate_client_request + server_dispatch
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_validate_and_dispatch_roundtrip() {
+        let mut req = NtpPacket::zero();
+        req.set_li_vn_mode(li::NO_WARNING, NTP_VERSION, mode::CLIENT);
+        req.stratum = 3;
+        req.poll = 6;
+        req.precision = -18;
+        req.transmit_ts = NtpTimestamp::new(42_000_000, 123_456_789);
+
+        // Validate first
+        assert_eq!(validate_client_request(&req), Ok(mode::CLIENT));
+
+        // Dispatch
+        let status = synced_status();
+        let resp = server_dispatch(&req, 42_000_001.987, &status).unwrap();
+
+        // Verify response
+        assert_eq!(resp.mode(), mode::SERVER);
+        assert_eq!(resp.version(), NTP_VERSION);
+        assert_eq!(resp.leap_indicator(), li::NO_WARNING);
+        assert_eq!(resp.stratum, 2);
+
+        // Wire-format roundtrip
+        let encoded = resp.encode();
+        let decoded = crate::ntp::NtpDatagram::decode(&encoded).unwrap();
+        match decoded {
+            crate::ntp::NtpDatagram::Unauthenticated(p) => assert_eq!(p, resp),
+            _ => panic!("expected unauthenticated"),
+        }
     }
 }

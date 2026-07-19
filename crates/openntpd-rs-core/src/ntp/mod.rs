@@ -508,6 +508,7 @@ pub fn unix_to_ntp(unix_secs: i64, nsec: u32) -> (u32, u32) {
 // ---------------------------------------------------------------------------
 
 pub mod clock;
+pub mod engine;
 pub mod msg;
 pub mod query;
 

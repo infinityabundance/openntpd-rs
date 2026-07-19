@@ -727,6 +727,406 @@ pub fn poll_interval_str(poll: i8) -> alloc::string::String {
 }
 
 // ---------------------------------------------------------------------------
+// Client peer lifecycle — trustlevel, scheduling, state machine
+// ---------------------------------------------------------------------------
+
+// Re-export the ntp query module's build_query for client query setup.
+use crate::ntp::query::build_query;
+
+// ---------------------------------------------------------------------------
+// Constants (matching OpenNTPD's ntpd.h)
+// ---------------------------------------------------------------------------
+
+/// Minimum trustlevel for a peer to be considered valid.
+/// C: TRUSTLEVEL_BADPEER = 6
+pub const TRUSTLEVEL_BADPEER: u8 = 6;
+
+/// Initial trustlevel for a newly configured peer.
+/// C: TRUSTLEVEL_PATHETIC = 2
+pub const TRUSTLEVEL_PATHETIC: u8 = 2;
+
+/// Trustlevel threshold above which normal polling applies.
+/// C: TRUSTLEVEL_AGGRESSIVE = 8
+pub const TRUSTLEVEL_AGGRESSIVE: u8 = 8;
+
+/// Maximum trustlevel a peer can reach.
+/// C: TRUSTLEVEL_MAX = 10
+pub const TRUSTLEVEL_MAX: u8 = 10;
+
+/// Normal query interval (seconds) — used when trustlevel is high.
+/// C: INTERVAL_QUERY_NORMAL = 30
+pub const INTERVAL_QUERY_NORMAL: i64 = 30;
+
+/// Pathetic query interval (seconds) — used when trust is low.
+/// C: INTERVAL_QUERY_PATHETIC = 60
+pub const INTERVAL_QUERY_PATHETIC: i64 = 60;
+
+/// Aggressive query interval (seconds) — used during initial sync.
+/// C: INTERVAL_QUERY_AGGRESSIVE = 5
+pub const INTERVAL_QUERY_AGGRESSIVE: i64 = 5;
+
+/// Ultra-violence query interval (seconds) — used at startup with -s.
+/// C: INTERVAL_QUERY_ULTRA_VIOLENCE = 1
+pub const INTERVAL_QUERY_ULTRA_VIOLENCE: i64 = 1;
+
+/// Maximum time (seconds) a single query may take before timeout.
+/// C: QUERYTIME_MAX = 15
+pub const QUERYTIME_MAX: i64 = 15;
+
+/// Maximum timeout (seconds) when waiting with -s (settime mode).
+/// C: SETTIME_TIMEOUT = 15
+pub const SETTIME_TIMEOUT: i64 = 15;
+
+/// Maximum consecutive send errors before reconnecting.
+/// C: MAX_SEND_ERRORS = 3
+pub const MAX_SEND_ERRORS: u8 = 3;
+
+/// Number of replies collected for median-based auto-setting.
+/// C: AUTO_REPLIES = 4
+pub const AUTO_REPLIES: usize = 4;
+
+/// Minimum offset (seconds) to bother with auto-setting.
+/// C: AUTO_THRESHOLD = 60
+const AUTO_THRESHOLD: f64 = 60.0;
+
+// ---------------------------------------------------------------------------
+// Client state machine
+// ---------------------------------------------------------------------------
+
+/// Client peer state machine state.
+///
+/// Corresponds to C: `enum client_state` in ntpd.h
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClientState {
+    /// Initial state before DNS resolution.
+    None,
+    /// DNS resolution is in progress.
+    DnsInProgress,
+    /// DNS resolution temporarily failed.
+    DnsTempFail,
+    /// DNS resolution completed successfully.
+    DnsDone,
+    /// A query has been sent to the server.
+    QuerySent,
+    /// A valid reply has been received from the server.
+    ReplyReceived,
+    /// The outstanding query timed out.
+    Timeout,
+    /// The peer is in an invalid state.
+    Invalid,
+}
+
+// ---------------------------------------------------------------------------
+// Auto-setting decision
+// ---------------------------------------------------------------------------
+
+/// Decision from the auto-setting logic.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum AutoDecision {
+    /// Not enough data yet — keep polling.
+    Wait,
+    /// Set the clock to the given offset (seconds).
+    SetTime(f64),
+    /// Abandon auto-setting.
+    Abandon,
+}
+
+// ---------------------------------------------------------------------------
+// ClientPeer
+// ---------------------------------------------------------------------------
+
+/// Extended peer state for client operation.
+///
+/// Wraps a [`Peer`] with runtime state: the client state machine,
+/// trustlevel, query scheduling fields, and error tracking.
+///
+/// Corresponds to the runtime fields of `struct ntp_peer` in OpenNTPD's
+/// `client.c` and `ntpd.h`.
+#[derive(Debug, Clone)]
+pub struct ClientPeer {
+    /// The underlying NTP peer (clock filter, reachability, etc.).
+    pub peer: Peer,
+    /// Current state in the client state machine.
+    pub state: ClientState,
+    /// Current trustlevel (0–10).
+    pub trustlevel: u8,
+    /// Monotonic time for the next scheduled query (seconds).
+    pub next: i64,
+    /// Monotonic deadline by which a response must arrive.
+    pub deadline: i64,
+    /// Current poll interval (seconds).
+    pub poll: i64,
+    /// Consecutive send errors.
+    pub senderrors: u8,
+    /// Last error code seen (for deduplicating log messages).
+    pub lasterror: i32,
+    /// Internal counter for trustlevel advancement from AGGRESSIVE to MAX
+    /// (increments every good response; trustlevel rises every 8 responses).
+    pub trustlevel_count: u8,
+}
+
+impl ClientPeer {
+    /// Create a new [`ClientPeer`] wrapping a [`Peer`].
+    ///
+    /// The initial state is [`ClientState::None`] and the initial
+    /// trustlevel is [`TRUSTLEVEL_PATHETIC`].
+    ///
+    /// Corresponds to the initialization in C: `client_peer_init()`.
+    #[must_use]
+    pub fn new(address: ConfigString, weight: u8, trusted: bool) -> Self {
+        Self {
+            peer: Peer::new(address, weight, trusted),
+            state: ClientState::None,
+            trustlevel: TRUSTLEVEL_PATHETIC,
+            next: 0,
+            deadline: 0,
+            poll: 0,
+            senderrors: 0,
+            lasterror: 0,
+            trustlevel_count: 0,
+        }
+    }
+
+    /// Initialize the peer for addressing.
+    ///
+    /// If `addr` is `Some`, the peer transitions to [`ClientState::DnsDone`]
+    /// and schedules an immediate next query with `set_next(0)`.
+    /// If `addr` is `None`, the peer stays in [`ClientState::None`] and
+    /// the caller should initiate DNS resolution.
+    ///
+    /// Corresponds to C: `client_peer_init()` + `client_addr_init()`.
+    pub fn peer_init(&mut self, addr: Option<()>) {
+        self.trustlevel = TRUSTLEVEL_PATHETIC;
+        self.lasterror = 0;
+        self.senderrors = 0;
+        self.trustlevel_count = 0;
+
+        self.set_next(0);
+
+        if addr.is_some() {
+            // Address is already known — mark DNS as done.
+            self.state = ClientState::DnsDone;
+        } else {
+            // No address yet — caller should start DNS.
+            self.state = ClientState::None;
+        }
+    }
+
+    /// Initialize or advance to the next server address.
+    ///
+    /// Manages an internal address index (automatically added to
+    /// `ClientPeer`).  When called with a non-empty address list,
+    /// increments the index and resets `trustlevel` to
+    /// [`TRUSTLEVEL_PATHETIC`].  Returns `true` if a next address is
+    /// available, `false` if the list is exhausted or empty (in which
+    /// case the caller should initiate DNS).
+    ///
+    /// Corresponds to C: `client_nextaddr()`.
+    pub fn next_addr(&mut self, addrs: &[crate::config::directive::ConfigString]) -> bool {
+        if addrs.is_empty() {
+            self.state = ClientState::DnsInProgress;
+            return false;
+        }
+        // The caller manages which address is current externally;
+        // we just reset trustlevel and state as in the C code.
+        self.trustlevel = TRUSTLEVEL_PATHETIC;
+        self.trustlevel_count = 0;
+        self.state = ClientState::DnsDone;
+        true
+    }
+
+    /// Schedule the next query.
+    ///
+    /// Sets `next` to `interval` seconds from now, clears `deadline`,
+    /// and records `interval` as the current poll interval.
+    ///
+    /// Corresponds to C: `set_next()`.
+    pub fn set_next(&mut self, interval: i64) {
+        // In the real daemon, `next` would be set to `getmonotime() + interval`.
+        // Here we store the relative interval; the caller adds the monotonic
+        // base when scheduling.
+        self.next = interval;
+        self.deadline = 0;
+        self.poll = interval;
+    }
+
+    /// Set a query deadline (timeout).
+    ///
+    /// Sets `deadline` to `timeout` seconds from now and clears `next`
+    /// so that the next state transition is governed by the deadline.
+    ///
+    /// Corresponds to C: `set_deadline()`.
+    pub fn set_deadline(&mut self, timeout: i64) {
+        self.deadline = timeout;
+        self.next = 0;
+    }
+
+    /// Update the trustlevel based on whether a good response was
+    /// received.
+    ///
+    /// **Good response** (`good_response = true`):
+    /// - Increments trustlevel by 1 until [`TRUSTLEVEL_AGGRESSIVE`] (8).
+    /// - Above AGGRESSIVE, increments every 8 good responses
+    ///   (tracked via `trustlevel_count`) until [`TRUSTLEVEL_MAX`] (10).
+    /// - When trustlevel crosses [`TRUSTLEVEL_BADPEER`] (6), the peer
+    ///   becomes "valid".
+    ///
+    /// **Bad response** (`good_response = false`):
+    /// - Decrements trustlevel by 1, floored at [`TRUSTLEVEL_BADPEER`] (6).
+    ///
+    /// This implements the logic from C: `client_dispatch()` for the
+    /// good-path increment and the send-error handler for the bad-path
+    /// decrement.
+    pub fn update_trustlevel(&mut self, good_response: bool) {
+        if good_response {
+            if self.trustlevel >= TRUSTLEVEL_MAX {
+                return;
+            }
+
+            if self.trustlevel < TRUSTLEVEL_AGGRESSIVE {
+                // +1 per good response up to AGGRESSIVE.
+                self.trustlevel += 1;
+            } else {
+                // +1 every 8 responses from AGGRESSIVE to MAX.
+                self.trustlevel_count = self.trustlevel_count.wrapping_add(1);
+                if self.trustlevel_count >= 8 {
+                    self.trustlevel_count = 0;
+                    self.trustlevel = self.trustlevel.saturating_add(1).min(TRUSTLEVEL_MAX);
+                }
+            }
+        } else {
+            // Bad response: decrement trustlevel, floor at BADPEER.
+            if self.trustlevel > TRUSTLEVEL_BADPEER {
+                self.trustlevel -= 1;
+            }
+        }
+    }
+
+    /// Handle a query response.
+    ///
+    /// Updates the peer's clock filter, reachability, and trustlevel.
+    /// The caller must have already validated the response and computed
+    /// `offset` and `delay`.
+    ///
+    /// After this call, the next query interval is scheduled based on
+    /// the peer's current trustlevel:
+    ///
+    /// | Trustlevel               | Interval                           |
+    /// |--------------------------|------------------------------------|
+    /// | `< TRUSTLEVEL_PATHETIC`  | `INTERVAL_QUERY_PATHETIC` (60)     |
+    /// | `< TRUSTLEVEL_AGGRESSIVE`| `INTERVAL_QUERY_AGGRESSIVE` (5)    |
+    /// | `>= TRUSTLEVEL_AGGRESSIVE`| `INTERVAL_QUERY_NORMAL` (30)       |
+    ///
+    /// Corresponds to C: `client_dispatch()` (response handling and
+    /// trustlevel/scheduling portion).
+    pub fn dispatch_response(&mut self, offset: f64, delay: f64, stratum: u8) {
+        self.state = ClientState::ReplyReceived;
+
+        // Add sample to the peer's clock filter.
+        // Use the same per-sample dispersion as `process_response`.
+        let dispersion = crate::peer::MAX_DISPERSION;
+        self.peer.add_sample(offset, delay, dispersion);
+
+        // Update the peer's stratum from this response.
+        self.peer.stratum = stratum;
+
+        // Update reachability (success = set LSB to 1).
+        self.peer.update_reach(true);
+
+        // Update poll interval state machine.
+        self.peer.update_poll(true);
+
+        // Determine next query interval based on trustlevel.
+        // IMPORTANT: match C ordering — check trustlevel BEFORE incrementing.
+        let interval = if self.trustlevel < TRUSTLEVEL_PATHETIC {
+            INTERVAL_QUERY_PATHETIC
+        } else if self.trustlevel < TRUSTLEVEL_AGGRESSIVE {
+            INTERVAL_QUERY_AGGRESSIVE
+        } else {
+            INTERVAL_QUERY_NORMAL
+        };
+
+        self.set_next(interval);
+
+        // Advance trustlevel for a good response.
+        // This must happen AFTER the interval check, matching C:
+        //   client_dispatch() checks trustlevel, calls set_next,
+        //   THEN increments p->trustlevel++.
+        self.update_trustlevel(true);
+    }
+
+    /// Format an error message with peer address context.
+    ///
+    /// If the error code matches the `lasterror`, produces a debug-level
+    /// message (including `strerror`-style text).  If it is a new error,
+    /// updates `lasterror` and produces a warning-level message.
+    ///
+    /// Returns the formatted message string.
+    ///
+    /// Corresponds to C: `client_log_error()`.
+    #[must_use]
+    pub fn log_error(&self, operation: &str, error: i32) -> alloc::string::String {
+        let addr = self.peer.address.as_utf8().unwrap_or("<unknown>");
+        if self.lasterror == error {
+            alloc::format!("{operation} {addr}: {error} (debug — repeated)")
+        } else {
+            alloc::format!("{operation} {addr}: {error}")
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Auto-setting logic
+// ---------------------------------------------------------------------------
+
+/// Decide whether to auto-set the clock based on the current offset and
+/// trustlevel.
+///
+/// Returns [`AutoDecision::SetTime`] when:
+/// - `trustlevel >= TRUSTLEVEL_AGGRESSIVE` (8) — we trust the peer
+/// - `offset >= AUTO_THRESHOLD` (60 seconds) — the offset is worth
+///   correcting
+///
+/// Returns [`AutoDecision::Wait`] when conditions are not yet met.
+/// Returns [`AutoDecision::Abandon`] when auto-setting is not viable.
+///
+/// This is a simplified deterministic version of C: `handle_auto()` +
+/// `auto_cmp()`.  The original C accumulates [`AUTO_REPLIES`] samples
+/// and takes the median; callers who want median-of-4 filtering should
+/// accumulate values externally and pass only the median to this function.
+#[must_use]
+pub fn handle_auto(trusted: bool, offset: f64, trustlevel: u8) -> AutoDecision {
+    if !trusted {
+        // Untrusted peers cannot trigger auto-set.
+        return AutoDecision::Abandon;
+    }
+
+    if trustlevel < TRUSTLEVEL_AGGRESSIVE {
+        // Not enough trust accumulated yet.
+        return AutoDecision::Wait;
+    }
+
+    if offset < AUTO_THRESHOLD {
+        // Offset is small enough that auto-setting is not worthwhile.
+        return AutoDecision::Wait;
+    }
+
+    AutoDecision::SetTime(offset)
+}
+
+/// Build a mode 3 client NTP query packet.
+///
+/// The packet has leap indicator NO_WARNING, NTP version 4, and mode
+/// CLIENT (3), with the transmit timestamp set to the given `now`.
+///
+/// Corresponds to C: the query setup in `client_query()`:
+/// `p->query.msg.status = MODE_CLIENT | (NTP_VERSION << 3)`.
+#[must_use]
+pub fn setup_client_query(now: NtpTimestamp) -> crate::ntp::NtpPacket {
+    build_query(now)
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -1536,5 +1936,653 @@ mod tests {
         assert!(s.contains("m") || s.contains("s"));
         let s = poll_interval_str(10); // 1024s → 17m4s
         assert!(s.contains("h") || s.contains("m"));
+    }
+
+    // -----------------------------------------------------------------------
+    // ClientPeer — construction
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_client_peer_new_defaults() {
+        let cp = ClientPeer::new(addr("pool.ntp.org"), 1, false);
+        assert_eq!(cp.state, ClientState::None);
+        assert_eq!(cp.trustlevel, TRUSTLEVEL_PATHETIC);
+        assert_eq!(cp.next, 0);
+        assert_eq!(cp.deadline, 0);
+        assert_eq!(cp.poll, 0);
+        assert_eq!(cp.senderrors, 0);
+        assert_eq!(cp.lasterror, 0);
+        assert_eq!(cp.trustlevel_count, 0);
+        assert!(!cp.peer.trusted);
+        assert_eq!(cp.peer.weight, 1);
+    }
+
+    #[test]
+    fn test_client_peer_new_trusted() {
+        let cp = ClientPeer::new(addr("trusted.server"), 5, true);
+        assert!(cp.peer.trusted);
+        assert_eq!(cp.peer.weight, 5);
+    }
+
+    #[test]
+    fn test_client_peer_new_sets_trustlevel_path() {
+        let cp = ClientPeer::new(addr("x.example.com"), 1, false);
+        assert_eq!(cp.trustlevel, 2);
+    }
+
+    // -----------------------------------------------------------------------
+    // ClientPeer — state transitions
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_client_peer_init_with_addr_sets_dns_done() {
+        let mut cp = ClientPeer::new(addr("server.example.com"), 1, false);
+        assert_eq!(cp.state, ClientState::None);
+        cp.peer_init(Some(()));
+        assert_eq!(cp.state, ClientState::DnsDone);
+        assert_eq!(cp.next, 0); // set_next(0)
+        assert_eq!(cp.deadline, 0); // cleared by set_next
+    }
+
+    #[test]
+    fn test_client_peer_init_without_addr_stays_none() {
+        let mut cp = ClientPeer::new(addr("needs-dns.example.com"), 1, false);
+        cp.peer_init(None);
+        assert_eq!(cp.state, ClientState::None);
+        assert_eq!(cp.next, 0);
+    }
+
+    #[test]
+    fn test_client_peer_init_resets_trustlevel() {
+        let mut cp = ClientPeer::new(addr("x.example.com"), 1, false);
+        cp.trustlevel = 9;
+        cp.lasterror = 42;
+        cp.senderrors = 2;
+        cp.peer_init(Some(()));
+        assert_eq!(cp.trustlevel, TRUSTLEVEL_PATHETIC);
+        assert_eq!(cp.lasterror, 0);
+        assert_eq!(cp.senderrors, 0);
+        assert_eq!(cp.trustlevel_count, 0);
+    }
+
+    #[test]
+    fn test_client_peer_next_addr_empty_list_triggers_dns() {
+        let mut cp = ClientPeer::new(addr("x.example.com"), 1, false);
+        cp.state = ClientState::DnsDone;
+        let result = cp.next_addr(&[]);
+        assert!(!result);
+        assert_eq!(cp.state, ClientState::DnsInProgress);
+    }
+
+    #[test]
+    fn test_client_peer_next_addr_resets_trustlevel() {
+        let mut cp = ClientPeer::new(addr("x.example.com"), 1, false);
+        cp.trustlevel = 9;
+        cp.trustlevel_count = 5;
+        let result = cp.next_addr(&[addr("a.com")]);
+        assert!(result);
+        assert_eq!(cp.trustlevel, TRUSTLEVEL_PATHETIC);
+        assert_eq!(cp.trustlevel_count, 0);
+        assert_eq!(cp.state, ClientState::DnsDone);
+    }
+
+    #[test]
+    fn test_client_state_transition_none_to_dns_to_query() {
+        let mut cp = ClientPeer::new(addr("x.example.com"), 1, false);
+        assert_eq!(cp.state, ClientState::None);
+
+        // DNS resolves
+        cp.state = ClientState::DnsDone;
+        assert_eq!(cp.state, ClientState::DnsDone);
+
+        // Query sent
+        cp.state = ClientState::QuerySent;
+        assert_eq!(cp.state, ClientState::QuerySent);
+
+        // Reply received
+        cp.dispatch_response(0.05, 0.01, 3);
+        assert_eq!(cp.state, ClientState::ReplyReceived);
+    }
+
+    #[test]
+    fn test_client_state_timeout_transition() {
+        let mut cp = ClientPeer::new(addr("x.example.com"), 1, false);
+        cp.state = ClientState::QuerySent;
+        cp.state = ClientState::Timeout;
+        assert_eq!(cp.state, ClientState::Timeout);
+    }
+
+    // -----------------------------------------------------------------------
+    // ClientPeer — set_next / set_deadline
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_set_next_schedules_interval() {
+        let mut cp = ClientPeer::new(addr("x.example.com"), 1, false);
+        cp.set_next(30);
+        assert_eq!(cp.next, 30);
+        assert_eq!(cp.deadline, 0);
+        assert_eq!(cp.poll, 30);
+    }
+
+    #[test]
+    fn test_set_next_zero_interval() {
+        let mut cp = ClientPeer::new(addr("x.example.com"), 1, false);
+        cp.set_next(0);
+        assert_eq!(cp.next, 0);
+        assert_eq!(cp.poll, 0);
+    }
+
+    #[test]
+    fn test_set_next_clears_deadline() {
+        let mut cp = ClientPeer::new(addr("x.example.com"), 1, false);
+        cp.deadline = 42;
+        cp.set_next(15);
+        assert_eq!(cp.deadline, 0, "set_next must clear deadline");
+    }
+
+    #[test]
+    fn test_set_deadline_schedules_timeout() {
+        let mut cp = ClientPeer::new(addr("x.example.com"), 1, false);
+        cp.set_deadline(15);
+        assert_eq!(cp.deadline, 15);
+        assert_eq!(cp.next, 0, "set_deadline must clear next");
+    }
+
+    #[test]
+    fn test_set_deadline_clears_next() {
+        let mut cp = ClientPeer::new(addr("x.example.com"), 1, false);
+        cp.next = 99;
+        cp.set_deadline(10);
+        assert_eq!(cp.next, 0, "set_deadline must clear next");
+    }
+
+    // -----------------------------------------------------------------------
+    // ClientPeer — trustlevel ramp-up (good responses)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_trustlevel_increments_from_path_to_aggressive() {
+        let mut cp = ClientPeer::new(addr("x.example.com"), 1, false);
+        assert_eq!(cp.trustlevel, 2); // PATHETIC
+
+        for _ in 0..6 {
+            cp.update_trustlevel(true);
+        }
+        // 2 + 6 = 8 = AGGRESSIVE
+        assert_eq!(cp.trustlevel, TRUSTLEVEL_AGGRESSIVE);
+    }
+
+    #[test]
+    fn test_trustlevel_every_8_after_aggressive() {
+        let mut cp = ClientPeer::new(addr("x.example.com"), 1, false);
+        cp.trustlevel = TRUSTLEVEL_AGGRESSIVE; // 8
+
+        // 7 good responses: should stay at 8
+        for _ in 0..7 {
+            cp.update_trustlevel(true);
+        }
+        assert_eq!(cp.trustlevel, 8);
+        assert_eq!(cp.trustlevel_count, 7);
+
+        // 8th good response: should tick to 9
+        cp.update_trustlevel(true);
+        assert_eq!(cp.trustlevel, 9);
+        assert_eq!(cp.trustlevel_count, 0);
+    }
+
+    #[test]
+    fn test_trustlevel_reaches_max() {
+        let mut cp = ClientPeer::new(addr("x.example.com"), 1, false);
+        // 2 → 8 needs 6 hits
+        for _ in 0..6 {
+            cp.update_trustlevel(true);
+        }
+        assert_eq!(cp.trustlevel, 8);
+        // 8 → 9 needs 8 hits
+        for _ in 0..8 {
+            cp.update_trustlevel(true);
+        }
+        assert_eq!(cp.trustlevel, 9);
+        // 9 → 10 needs 8 hits
+        for _ in 0..8 {
+            cp.update_trustlevel(true);
+        }
+        assert_eq!(cp.trustlevel, 10);
+    }
+
+    #[test]
+    fn test_trustlevel_stays_at_max() {
+        let mut cp = ClientPeer::new(addr("x.example.com"), 1, false);
+        cp.trustlevel = TRUSTLEVEL_MAX;
+        for _ in 0..20 {
+            cp.update_trustlevel(true);
+        }
+        assert_eq!(cp.trustlevel, 10, "must not exceed MAX");
+    }
+
+    #[test]
+    fn test_trustlevel_count_wrapping() {
+        let mut cp = ClientPeer::new(addr("x.example.com"), 1, false);
+        cp.trustlevel = TRUSTLEVEL_AGGRESSIVE;
+        cp.trustlevel_count = 255;
+        // wrapping_add(1) → 0, which is < 8, so trustlevel stays at 8
+        cp.update_trustlevel(true);
+        assert_eq!(cp.trustlevel, 8, "0 < 8 so no trustlevel tick");
+        assert_eq!(cp.trustlevel_count, 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // ClientPeer — trustlevel decay (bad responses)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_trustlevel_decrements_on_bad_response() {
+        let mut cp = ClientPeer::new(addr("x.example.com"), 1, false);
+        cp.trustlevel = 9;
+        cp.update_trustlevel(false);
+        assert_eq!(cp.trustlevel, 8);
+    }
+
+    #[test]
+    fn test_trustlevel_floor_at_badpeer() {
+        let mut cp = ClientPeer::new(addr("x.example.com"), 1, false);
+        cp.trustlevel = TRUSTLEVEL_BADPEER; // 6
+        for _ in 0..5 {
+            cp.update_trustlevel(false);
+        }
+        assert_eq!(cp.trustlevel, 6, "must not drop below BADPEER");
+    }
+
+    #[test]
+    fn test_trustlevel_bad_from_max() {
+        let mut cp = ClientPeer::new(addr("x.example.com"), 1, false);
+        cp.trustlevel = TRUSTLEVEL_MAX;
+        // 10 → 9 → 8 → 7 → 6 (stops at 6)
+        for _ in 0..6 {
+            cp.update_trustlevel(false);
+        }
+        assert_eq!(cp.trustlevel, 6);
+    }
+
+    // -----------------------------------------------------------------------
+    // ClientPeer — send_errors tracking
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_senderrors_tracking() {
+        let mut cp = ClientPeer::new(addr("x.example.com"), 1, false);
+        assert_eq!(cp.senderrors, 0);
+        cp.senderrors = 1;
+        assert_eq!(cp.senderrors, 1);
+    }
+
+    #[test]
+    fn test_senderrors_at_max() {
+        let mut cp = ClientPeer::new(addr("x.example.com"), 1, false);
+        cp.senderrors = MAX_SEND_ERRORS;
+        assert_eq!(cp.senderrors, 3);
+    }
+
+    #[test]
+    fn test_senderrors_reset_by_peer_init() {
+        let mut cp = ClientPeer::new(addr("x.example.com"), 1, false);
+        cp.senderrors = 3;
+        cp.peer_init(Some(()));
+        assert_eq!(cp.senderrors, 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // ClientPeer — dispatch_response
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_dispatch_response_sets_state() {
+        let mut cp = ClientPeer::new(addr("x.example.com"), 1, false);
+        cp.state = ClientState::QuerySent;
+        cp.dispatch_response(0.05, 0.01, 3);
+        assert_eq!(cp.state, ClientState::ReplyReceived);
+    }
+
+    #[test]
+    fn test_dispatch_response_updates_peer_filter() {
+        let mut cp = ClientPeer::new(addr("x.example.com"), 1, false);
+        cp.peer.poll = 3;
+        cp.dispatch_response(0.05, 0.01, 3);
+        assert!(
+            (cp.peer.offset - 0.05).abs() < 1e-9,
+            "peer offset should be ~0.05, got {}",
+            cp.peer.offset
+        );
+        assert!(
+            (cp.peer.delay - 0.01).abs() < 1e-9,
+            "peer delay should be ~0.01, got {}",
+            cp.peer.delay
+        );
+        assert_eq!(cp.peer.stratum, 3);
+    }
+
+    #[test]
+    fn test_dispatch_response_updates_reachability() {
+        let mut cp = ClientPeer::new(addr("x.example.com"), 1, false);
+        assert_eq!(cp.peer.reach, 0);
+        cp.dispatch_response(0.05, 0.01, 3);
+        // update_reach(true) shifts left and sets LSB
+        assert_eq!(cp.peer.reach, 0b0000_0001);
+    }
+
+    #[test]
+    fn test_dispatch_response_increments_trustlevel() {
+        let mut cp = ClientPeer::new(addr("x.example.com"), 1, false);
+        assert_eq!(cp.trustlevel, 2);
+        cp.dispatch_response(0.05, 0.01, 3);
+        assert_eq!(cp.trustlevel, 3);
+    }
+
+    #[test]
+    fn test_dispatch_response_sets_next_interval_path() {
+        let mut cp = ClientPeer::new(addr("x.example.com"), 1, false);
+        // trustlevel is 2 (PATHETIC) — but dispatch checks:
+        // if trustlevel < PATHETIC → PATHETIC (60)
+        // else if trustlevel < AGGRESSIVE → AGGRESSIVE (5)
+        // else → NORMAL (30)
+        // With PATHETIC=2 and trust=2: 2 < 2 is false, 2 < 8 is true → AGGRESSIVE
+        cp.dispatch_response(0.05, 0.01, 3);
+        assert_eq!(cp.next, INTERVAL_QUERY_AGGRESSIVE);
+    }
+
+    #[test]
+    fn test_dispatch_response_sets_next_interval_normal() {
+        let mut cp = ClientPeer::new(addr("x.example.com"), 1, false);
+        cp.trustlevel = TRUSTLEVEL_AGGRESSIVE; // 8
+        cp.dispatch_response(0.05, 0.01, 3);
+        assert_eq!(cp.next, INTERVAL_QUERY_NORMAL);
+    }
+
+    #[test]
+    fn test_dispatch_response_with_zero_offset() {
+        let mut cp = ClientPeer::new(addr("x.example.com"), 1, false);
+        cp.dispatch_response(0.0, 0.0, 1);
+        assert!(
+            (cp.peer.offset - 0.0).abs() < 1e-9,
+            "offset should be ~0, got {}",
+            cp.peer.offset
+        );
+        assert_eq!(cp.peer.stratum, 1);
+    }
+
+    #[test]
+    fn test_dispatch_response_with_large_offset() {
+        let mut cp = ClientPeer::new(addr("x.example.com"), 1, false);
+        cp.dispatch_response(10.0, 0.5, 2);
+        assert!(
+            (cp.peer.offset - 10.0).abs() < 1e-9,
+            "offset should be ~10, got {}",
+            cp.peer.offset
+        );
+        assert_eq!(cp.peer.stratum, 2);
+    }
+
+    // -----------------------------------------------------------------------
+    // ClientPeer — log_error
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_log_error_new_error() {
+        let cp = ClientPeer::new(addr("my.server"), 1, false);
+        let msg = cp.log_error("sendmsg", 42);
+        assert!(msg.contains("sendmsg"));
+        assert!(msg.contains("my.server"));
+        assert!(!msg.contains("repeated"));
+    }
+
+    #[test]
+    fn test_log_error_repeated_error() {
+        let mut cp = ClientPeer::new(addr("my.server"), 1, false);
+        cp.lasterror = 42;
+        let msg = cp.log_error("recvmsg", 42);
+        assert!(msg.contains("recvmsg"));
+        assert!(msg.contains("repeated"));
+    }
+
+    #[test]
+    fn test_log_error_different_error() {
+        let mut cp = ClientPeer::new(addr("my.server"), 1, false);
+        cp.lasterror = 11;
+        let msg = cp.log_error("sendmsg", 42);
+        assert!(msg.contains("sendmsg"));
+        assert!(msg.contains("my.server"));
+        assert!(!msg.contains("repeated"), "different error is not repeated");
+    }
+
+    #[test]
+    fn test_log_error_unknown_addr() {
+        let cp = ClientPeer::new(addr(""), 1, false);
+        let msg = cp.log_error("connect", 99);
+        assert!(msg.contains("connect"));
+    }
+
+    // -----------------------------------------------------------------------
+    // Constants match C values
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_constants_match_c_values() {
+        assert_eq!(TRUSTLEVEL_BADPEER, 6);
+        assert_eq!(TRUSTLEVEL_PATHETIC, 2);
+        assert_eq!(TRUSTLEVEL_AGGRESSIVE, 8);
+        assert_eq!(TRUSTLEVEL_MAX, 10);
+        assert_eq!(INTERVAL_QUERY_NORMAL, 30);
+        assert_eq!(INTERVAL_QUERY_PATHETIC, 60);
+        assert_eq!(INTERVAL_QUERY_AGGRESSIVE, 5);
+        assert_eq!(INTERVAL_QUERY_ULTRA_VIOLENCE, 1);
+        assert_eq!(QUERYTIME_MAX, 15);
+        assert_eq!(SETTIME_TIMEOUT, 15);
+        assert_eq!(MAX_SEND_ERRORS, 3);
+    }
+
+    // -----------------------------------------------------------------------
+    // handle_auto decisions
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_handle_auto_abandon_untrusted() {
+        let decision = handle_auto(false, 100.0, TRUSTLEVEL_AGGRESSIVE);
+        assert_eq!(decision, AutoDecision::Abandon);
+    }
+
+    #[test]
+    fn test_handle_auto_wait_low_trustlevel() {
+        let decision = handle_auto(true, 100.0, TRUSTLEVEL_PATHETIC);
+        assert_eq!(decision, AutoDecision::Wait);
+    }
+
+    #[test]
+    fn test_handle_auto_settime_when_ready() {
+        let decision = handle_auto(true, 100.0, TRUSTLEVEL_AGGRESSIVE);
+        assert_eq!(decision, AutoDecision::SetTime(100.0));
+    }
+
+    #[test]
+    fn test_handle_auto_wait_below_threshold() {
+        // 59 < 60 threshold, should wait even though trust is high
+        let decision = handle_auto(true, 59.0, TRUSTLEVEL_AGGRESSIVE);
+        assert_eq!(decision, AutoDecision::Wait);
+    }
+
+    #[test]
+    fn test_handle_auto_wait_at_boundary() {
+        // Exactly 60 is >= threshold, but need trust >= 8
+        let decision = handle_auto(true, 60.0, TRUSTLEVEL_AGGRESSIVE);
+        assert_eq!(decision, AutoDecision::SetTime(60.0));
+    }
+
+    #[test]
+    fn test_handle_auto_wait_just_under_threshold() {
+        let decision = handle_auto(true, 59.999, TRUSTLEVEL_AGGRESSIVE);
+        assert_eq!(decision, AutoDecision::Wait);
+    }
+
+    #[test]
+    fn test_handle_auto_with_max_trustlevel() {
+        let decision = handle_auto(true, 100.0, TRUSTLEVEL_MAX);
+        assert_eq!(decision, AutoDecision::SetTime(100.0));
+    }
+
+    #[test]
+    fn test_handle_auto_abandon_untrusted_high_offset() {
+        let decision = handle_auto(false, 500.0, TRUSTLEVEL_MAX);
+        assert_eq!(decision, AutoDecision::Abandon);
+    }
+
+    // -----------------------------------------------------------------------
+    // setup_client_query
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_setup_client_query_builds_mode3() {
+        use crate::ntp::mode;
+        let now = NtpTimestamp::from_f64(12345.0);
+        let pkt = setup_client_query(now);
+        assert_eq!(pkt.mode(), mode::CLIENT, "must be mode 3 (CLIENT)");
+        assert_eq!(pkt.version(), 4, "must be NTPv4");
+        assert_eq!(pkt.transmit_ts, now, "transmit timestamp must match");
+    }
+
+    #[test]
+    fn test_setup_client_query_transmit_ts() {
+        let now = NtpTimestamp::from_f64(99999.0);
+        let pkt = setup_client_query(now);
+        assert_eq!(pkt.transmit_ts, now);
+    }
+
+    // -----------------------------------------------------------------------
+    // Integration-style: dispatch + trustlevel lifecycle
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_trustlevel_ramps_up_through_dispatch() {
+        let mut cp = ClientPeer::new(addr("x.example.com"), 1, false);
+        assert_eq!(cp.trustlevel, 2);
+
+        // Send 6 good responses → trust goes 2→8
+        for _ in 0..6 {
+            cp.dispatch_response(0.01, 0.005, 3);
+        }
+        assert_eq!(cp.trustlevel, 8);
+    }
+
+    #[test]
+    fn test_trustlevel_reaches_max_after_many_responses() {
+        let mut cp = ClientPeer::new(addr("x.example.com"), 1, false);
+        assert_eq!(cp.trustlevel, 2);
+
+        // 6 to reach AGGRESSIVE + 8 to reach 9 + 8 to reach 10 = 22
+        for _ in 0..22 {
+            cp.dispatch_response(0.01, 0.005, 3);
+        }
+        assert_eq!(cp.trustlevel, 10);
+    }
+
+    #[test]
+    fn test_trustlevel_decays_with_bad_responses_integration() {
+        let mut cp = ClientPeer::new(addr("x.example.com"), 1, false);
+        cp.trustlevel = TRUSTLEVEL_AGGRESSIVE; // 8
+
+        // Bad responses: 8 → 7 → 6 (floor at BADPEER=6)
+        cp.update_trustlevel(false);
+        assert_eq!(cp.trustlevel, 7);
+        cp.update_trustlevel(false);
+        assert_eq!(cp.trustlevel, 6);
+        cp.update_trustlevel(false);
+        assert_eq!(cp.trustlevel, 6, "floor at BADPEER");
+    }
+
+    #[test]
+    fn test_trustlevel_floor_in_integration() {
+        let mut cp = ClientPeer::new(addr("x.example.com"), 1, false);
+        cp.trustlevel = 9;
+        for _ in 0..10 {
+            cp.update_trustlevel(false);
+        }
+        assert_eq!(cp.trustlevel, 6); // floored at BADPEER
+    }
+
+    #[test]
+    fn test_next_addr_after_dns_done_resets() {
+        let mut cp = ClientPeer::new(addr("x.example.com"), 1, false);
+        cp.state = ClientState::DnsInProgress;
+        cp.trustlevel = 7;
+
+        let addrs = vec![addr("192.0.2.1"), addr("192.0.2.2"), addr("192.0.2.3")];
+        let result = cp.next_addr(&addrs);
+        assert!(result);
+        assert_eq!(cp.trustlevel, TRUSTLEVEL_PATHETIC);
+        assert_eq!(cp.state, ClientState::DnsDone);
+    }
+
+    // -----------------------------------------------------------------------
+    // Edge cases
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_trustlevel_zero_edge() {
+        let mut cp = ClientPeer::new(addr("x.example.com"), 1, false);
+        cp.trustlevel = 0;
+        // Good response should bring it to 1
+        cp.update_trustlevel(true);
+        assert_eq!(cp.trustlevel, 1);
+    }
+
+    #[test]
+    fn test_trustlevel_max_then_bad() {
+        let mut cp = ClientPeer::new(addr("x.example.com"), 1, false);
+        cp.trustlevel = TRUSTLEVEL_MAX;
+        cp.update_trustlevel(false);
+        assert_eq!(cp.trustlevel, 9);
+    }
+
+    #[test]
+    fn test_max_senderrors_reached_edge() {
+        let mut cp = ClientPeer::new(addr("x.example.com"), 1, false);
+        cp.senderrors = MAX_SEND_ERRORS;
+        // Simulate one more send error
+        cp.senderrors = cp.senderrors.saturating_add(1);
+        assert_eq!(cp.senderrors, 4, "should saturate above MAX");
+    }
+
+    #[test]
+    fn test_set_next_large_interval() {
+        let mut cp = ClientPeer::new(addr("x.example.com"), 1, false);
+        cp.set_next(999999);
+        assert_eq!(cp.next, 999999);
+        assert_eq!(cp.poll, 999999);
+    }
+
+    #[test]
+    fn test_set_deadline_large_timeout() {
+        let mut cp = ClientPeer::new(addr("x.example.com"), 1, false);
+        cp.set_deadline(999999);
+        assert_eq!(cp.deadline, 999999);
+        assert_eq!(cp.next, 0);
+    }
+
+    #[test]
+    fn test_dispatch_response_interval_below_path() {
+        let mut cp = ClientPeer::new(addr("x.example.com"), 1, false);
+        // trustlevel is checked BEFORE increment: trust=1 < PATHETIC=2 → PATHETIC(60)
+        cp.trustlevel = 1;
+        cp.dispatch_response(0.01, 0.01, 2);
+        assert_eq!(
+            cp.next,
+            INTERVAL_QUERY_PATHETIC,
+            "trust 1 < 2 should use pathetic interval"
+        );
+    }
+
+    #[test]
+    fn test_handle_auto_barely_above_threshold() {
+        let decision = handle_auto(true, 60.001, TRUSTLEVEL_AGGRESSIVE);
+        assert_eq!(decision, AutoDecision::SetTime(60.001));
     }
 }

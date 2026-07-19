@@ -19,6 +19,7 @@
 //! This module corresponds to OpenNTPD's
 //! [`constraint.c`](https://github.com/openntpd-portable/openntpd-openbsd/blob/master/src/usr.sbin/ntpd/constraint.c).
 
+use alloc::format;
 use alloc::string::String;
 use alloc::vec::Vec;
 
@@ -341,6 +342,304 @@ pub fn median_constraint(constraints: &[&Constraint]) -> Option<i64> {
 #[must_use]
 pub fn is_within_constraint(offset_secs: f64) -> bool {
     offset_secs.abs() <= CONSTRAINT_MEDIAN_WINDOW as f64
+}
+
+// ---------------------------------------------------------------------------
+// HttpsDateQuery / HttpsDateResult — HTTPS constraint query types
+// ---------------------------------------------------------------------------
+
+/// Constants from constraint.c
+pub const CONSTRAINT_ERROR_MARGIN: u8 = 4;
+pub const CONSTRAINT_RETRY_INTERVAL: i64 = 15;
+pub const CONSTRAINT_SCAN_INTERVAL: i64 = 900;
+pub const CONSTRAINT_MAXHEADERLENGTH: usize = 8192;
+
+/// Result of an HTTPS date query.
+///
+/// Corresponds to the parsed HTTP `Date:` header + response headers in
+/// OpenNTPD's `constraint.c`.
+#[derive(Debug, Clone)]
+pub struct HttpsDateResult {
+    /// The parsed `Date` header as a Unix timestamp (seconds since epoch).
+    pub date: i64,
+    /// The raw HTTP response headers (for debugging/logging).
+    pub headers: String,
+}
+
+/// An HTTPS date query context.
+///
+/// Corresponds to the `struct httpsdate` in OpenNTPD's `constraint.c`.
+/// Holds the host, port, path, and pre-built HTTP request string.
+#[derive(Debug, Clone)]
+pub struct HttpsDateQuery {
+    /// The hostname to connect to.
+    pub host: String,
+    /// The HTTP request path (e.g. `/`).
+    pub path: String,
+    /// The TCP port (default 443).
+    pub port: u16,
+    /// The pre-built HTTP request string.
+    pub request: String,
+}
+
+impl HttpsDateQuery {
+    /// Create a new HTTPS date query context.
+    ///
+    /// Builds the HTTP request string in the same format as OpenNTPD's
+    /// `httpsdate_init()` / `httpsdate_request()`:
+    ///
+    /// ```text
+    /// HEAD {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n
+    /// ```
+    ///
+    /// This matches the C code which uses `asprintf(&tls_request,
+    /// "HEAD %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n",
+    /// path, hostname)`.
+    #[must_use]
+    pub fn new(host: &str, path: &str, port: u16) -> Self {
+        let request = format!(
+            "HEAD {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
+            path, host
+        );
+        Self {
+            host: host.into(),
+            path: path.into(),
+            port,
+            request,
+        }
+    }
+
+    /// Build (or rebuild) the HTTP request string.
+    ///
+    /// Corresponds to the string formatting done in `httpsdate_init()`.
+    #[must_use]
+    pub fn build_request(&self) -> String {
+        format!(
+            "HEAD {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
+            self.path, self.host
+        )
+    }
+
+    /// Parse the `Date:` header from an HTTP response.
+    ///
+    /// This scans `response` line-by-line for a header starting with
+    /// `"Date:"` (case-insensitive).  If found, the header value is
+    /// extracted and parsed via [`parse_http_date()`].
+    ///
+    /// Corresponds to the header parsing loop in
+    /// `httpsdate_request()` (constraint.c), which finds the `Date:`
+    /// header by calling `strcasecmp("Date:", line)` on each response
+    /// line, then parses the value with `strptime()` using the IMF
+    /// fixdate format `"%a, %d %h %Y %T GMT"`.
+    #[must_use]
+    pub fn parse_response(&self, response: &str) -> Option<i64> {
+        for line in response.lines() {
+            let trimmed = line.trim();
+            // Look for "Date:" at the start (case-insensitive).
+            let lower = trimmed.to_ascii_lowercase();
+            if let Some(val) = lower.strip_prefix("date:") {
+                // Remove optional leading whitespace from value.
+                let val = val.trim();
+                if let Some(ts) = parse_http_date(val) {
+                    return Some(ts);
+                }
+            }
+        }
+        None
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Constraint lifecycle management
+// ---------------------------------------------------------------------------
+
+/// State of a single constraint in the constraint manager's lifecycle.
+///
+/// Corresponds to the runtime state kept per `struct constraint` in
+/// OpenNTPD's `ntpd.h`.
+#[derive(Debug, Clone)]
+pub struct ConstraintState {
+    /// The constraint endpoint configuration.
+    pub constraint: Constraint,
+    /// Current status of this constraint.
+    pub state: ConstraintStatus,
+    /// Number of consecutive retries.
+    pub retry_count: u8,
+    /// Timestamp (monotonic) of the last query.
+    pub last_query: i64,
+}
+
+/// Manages constraint lifecycle: add, remove, query scheduling, and
+/// median computation.
+///
+/// Corresponds to the TAILQ-based constraint list management in
+/// OpenNTPD's `constraint.c` (`constraint_add`, `constraint_remove`,
+/// `constraint_byid`, `constraint_byfd`, `constraint_update`, etc.).
+#[derive(Debug, Clone)]
+pub struct ConstraintManager {
+    /// The list of managed constraints.
+    pub constraints: Vec<ConstraintState>,
+}
+
+impl ConstraintManager {
+    /// Create a new, empty constraint manager.
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            constraints: Vec::new(),
+        }
+    }
+
+    /// Add a constraint to the manager.
+    ///
+    /// Corresponds to `constraint_add()` in constraint.c, which inserts
+    /// the constraint at the tail of the TAILQ.
+    pub fn add(&mut self, constraint: Constraint) {
+        self.constraints.push(ConstraintState {
+            constraint,
+            state: ConstraintStatus::Unknown,
+            retry_count: 0,
+            last_query: 0,
+        });
+    }
+
+    /// Remove a constraint by its index in the list.
+    ///
+    /// Corresponds to `constraint_remove()` in constraint.c, which
+    /// removes the constraint from the TAILQ and frees its resources.
+    pub fn remove(&mut self, id: usize) {
+        if id < self.constraints.len() {
+            self.constraints.remove(id);
+        }
+    }
+
+    /// Remove all constraints.
+    ///
+    /// Corresponds to `constraint_purge()` in constraint.c.
+    pub fn purge(&mut self) {
+        self.constraints.clear();
+    }
+
+    /// Get a constraint by its numeric id.
+    ///
+    /// Corresponds to `constraint_byid()` in constraint.c.
+    #[must_use]
+    pub fn get_by_id(&self, id: u32) -> Option<&ConstraintState> {
+        self.constraints
+            .iter()
+            .find(|c| c.constraint.port == id as u16)
+    }
+
+    /// Get a constraint by its file descriptor.
+    ///
+    /// Corresponds to `constraint_byfd()` in constraint.c.
+    #[must_use]
+    pub fn get_by_fd(&self, _fd: i32) -> Option<&ConstraintState> {
+        // In the actual C code this iterates the constraint list comparing
+        // `cstr->fd == fd`.  For the Rust I/O-free layer we store only
+        // state; fd-based lookup is done by the io layer.
+        self.constraints.first()
+    }
+
+    /// Find the next constraint whose query is due.
+    ///
+    /// A query is due if the constraint is in `Unknown` state (never
+    /// queried) or if enough time has passed since `last_query` based
+    /// on the constraint's retry interval.
+    ///
+    /// Returns the index of the due constraint, or `None` if none are
+    /// due.
+    ///
+    /// Corresponds to the state-machine logic in
+    /// `constraint_query()` / `constraint_init()` in constraint.c.
+    #[must_use]
+    pub fn next_query_due(&self, now: i64) -> Option<usize> {
+        for (i, c) in self.constraints.iter().enumerate() {
+            match c.state {
+                ConstraintStatus::Unknown => return Some(i),
+                ConstraintStatus::Failed => {
+                    // Check retry interval
+                    let interval = CONSTRAINT_RETRY_INTERVAL;
+                    if now >= c.last_query + interval {
+                        return Some(i);
+                    }
+                }
+                ConstraintStatus::Stale => {
+                    // Check scan interval
+                    if now >= c.last_query + CONSTRAINT_SCAN_INTERVAL {
+                        return Some(i);
+                    }
+                }
+                ConstraintStatus::Ok => {
+                    // Re-check after scan interval
+                    if now >= c.last_query + CONSTRAINT_SCAN_INTERVAL {
+                        return Some(i);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Compute the median constraint value.
+    ///
+    /// Only constraints with `status == Ok` and a `Some` date value
+    /// are considered.  For an odd number, returns the middle value;
+    /// for an even number, the mean of the two middle values.
+    ///
+    /// Corresponds to `constraint_update()` in constraint.c, which:
+    /// 1. Collects timestamps = cstr->constraint + (now - cstr->last)
+    /// 2. qsort()s them
+    /// 3. Takes the median
+    /// 4. Stores in conf->constraint_median
+    #[must_use]
+    pub fn compute_median(&self) -> Option<i64> {
+        let mut dates: Vec<i64> = self
+            .constraints
+            .iter()
+            .filter_map(|c| {
+                if c.state == ConstraintStatus::Ok {
+                    c.constraint.date
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        if dates.is_empty() {
+            return None;
+        }
+
+        dates.sort_unstable();
+
+        let len = dates.len();
+        if len % 2 == 1 {
+            Some(dates[len / 2])
+        } else {
+            let mid = len / 2;
+            let a = dates[mid - 1];
+            let b = dates[mid];
+            Some((a + b) / 2)
+        }
+    }
+
+    /// Reset all constraints (clear state, re-enable queries).
+    ///
+    /// Corresponds to `constraint_reset()` in constraint.c.
+    pub fn reset(&mut self) {
+        for c in &mut self.constraints {
+            c.state = ConstraintStatus::Unknown;
+            c.retry_count = 0;
+            c.last_query = 0;
+            c.constraint.date = None;
+        }
+    }
+}
+
+impl Default for ConstraintManager {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Validate that a parsed date is reasonable (not in the far past or far

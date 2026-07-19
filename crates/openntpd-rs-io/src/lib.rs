@@ -16,9 +16,16 @@
 //! sockaddr casts).
 
 pub mod clock;
+pub mod constraint_io;
+pub mod ctl;
 pub mod daemon;
+pub mod daemon_impl;
+pub mod dns_child;
+pub mod dns_io;
 pub mod file;
 pub mod imsg;
 pub mod privsep;
 pub mod process;
+pub mod sensor_io;
 pub mod socket;
+pub mod util;
