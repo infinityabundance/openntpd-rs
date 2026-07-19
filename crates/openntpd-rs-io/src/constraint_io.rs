@@ -14,7 +14,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::time::{Duration, Instant};
 
-use openntpd_rs_core::constraint::{HttpsDateQuery, HttpsDateResult};
+use openntpd_rs_core::constraint::{HttpsDateQuery, HttpsDateResult, CONSTRAINT_TIMEOUT_SECS};
 
 /// Timeout for a single TLS read operation (milliseconds).
 const TLS_READ_TIMEOUT_MS: u64 = 100;
@@ -301,6 +301,64 @@ pub fn httpsdate_query(
     }
 }
 
+/// Initialize an HTTPS date query context.
+///
+/// Creates a new [`HttpsDateQuery`] with the given host, path, and port,
+/// building the HTTP request string.  This corresponds to C's
+/// `httpsdate_init()` in constraint.c which allocates a `struct httpsdate`,
+/// sets the TLS address/port/hostname/path, builds the HTTP request via
+/// `asprintf`, and configures the TLS context with CA certificates.
+///
+/// # Arguments
+///
+/// * `host` - The hostname or IP address of the constraint server.
+/// * `path` - The HTTP request path (e.g. `/` or `/date`).
+/// * `port` - The TCP port (typically 443 for HTTPS).
+///
+/// # Returns
+///
+/// A new [`HttpsDateQuery`] ready for use with [`httpsdate_request`].
+#[must_use]
+pub fn httpsdate_init(host: &str, path: &str, port: u16) -> HttpsDateQuery {
+    HttpsDateQuery::new(host, path, port)
+}
+
+/// Execute an HTTPS date request and parse the `Date:` response header.
+///
+/// This corresponds to C's `httpsdate_request()` in constraint.c which:
+/// 1. Creates a TLS client context (`tls_client()`)
+/// 2. Configures TLS with CA certificates (`tls_configure()`)
+/// 3. Connects to the server (`tls_connect_servername()`)
+/// 4. Sends the HTTP HEAD request
+/// 5. Reads response headers looking for `Date:`
+/// 6. Parses the date with `strptime()` (IMF fixdate format)
+/// 7. If not synced, validates the TLS certificate time window
+///
+/// # Arguments
+///
+/// * `query` - The HTTPS date query context (from [`httpsdate_init`]).
+/// * `timeout` - A `libc::timeval` specifying the read timeout.
+/// * `retry` - Retry count (unused in current Rust implementation;
+///   matches C signature for API compatibility).
+///
+/// # Returns
+///
+/// `Ok(())` on success, `Err(String)` with a description on failure.
+pub fn httpsdate_request(
+    query: &HttpsDateQuery,
+    timeout: &libc::timeval,
+    _retry: i32,
+) -> Result<String, String> {
+    let timeout_secs = if timeout.tv_sec > 0 {
+        timeout.tv_sec as i64
+    } else {
+        CONSTRAINT_TIMEOUT_SECS as i64
+    };
+
+    let result = httpsdate_query(query, timeout_secs)?;
+    Ok(result.headers)
+}
+
 /// Free HTTPS date resources.
 ///
 /// Corresponds to C's `httpsdate_free()` which frees the
@@ -525,6 +583,44 @@ mod tests {
         // Port 1 is almost certainly unused.
         let query = HttpsDateQuery::new("127.0.0.1", "/", 1);
         let result = httpsdate_query(&query, 1);
+        assert!(result.is_err());
+    }
+
+    // ------------------------------------------------------------------
+    // httpsdate_init / httpsdate_request
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_httpsdate_init_creates_query() {
+        let query = httpsdate_init("example.com", "/", 443);
+        assert_eq!(query.host, "example.com");
+        assert_eq!(query.path, "/");
+        assert_eq!(query.port, 443);
+        assert!(query.request.contains("HEAD / HTTP/1.1"));
+        assert!(query.request.contains("Host: example.com"));
+    }
+
+    #[test]
+    fn test_httpsdate_init_default_port() {
+        let query = httpsdate_init("pool.ntp.org", "/date", 443);
+        assert_eq!(query.port, 443);
+        assert!(query.request.contains("/date"));
+    }
+
+    #[test]
+    fn test_httpsdate_init_custom_port() {
+        let query = httpsdate_init("constraint.example.com", "/", 8443);
+        assert_eq!(query.port, 8443);
+    }
+
+    #[test]
+    fn test_httpsdate_request_connection_refused() {
+        let query = httpsdate_init("127.0.0.1", "/", 1);
+        let tv = libc::timeval {
+            tv_sec: 1,
+            tv_usec: 0,
+        };
+        let result = httpsdate_request(&query, &tv, 0);
         assert!(result.is_err());
     }
 }

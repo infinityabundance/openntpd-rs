@@ -25,6 +25,18 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 // ---------------------------------------------------------------------------
+// Constants (matching OpenNTPD's ntpd.h)
+// ---------------------------------------------------------------------------
+
+/// Maximum number of offset samples stored per sensor.
+/// C: `#define SENSOR_OFFSETS 6`
+pub const SENSOR_OFFSETS: usize = 6;
+
+/// Default reference clock identifier for hardware sensors.
+/// C: `#define SENSOR_DEFAULT_REFID "HARD"`
+pub const SENSOR_DEFAULT_REFID: [u8; 4] = [b'H', b'A', b'R', b'D'];
+
+// ---------------------------------------------------------------------------
 // Sensor status
 // ---------------------------------------------------------------------------
 

@@ -23,6 +23,7 @@ pub mod daemon_impl;
 pub mod dns_child;
 pub mod dns_io;
 pub mod file;
+pub mod globals;
 pub mod imsg;
 pub mod ntp_child;
 pub mod platform;

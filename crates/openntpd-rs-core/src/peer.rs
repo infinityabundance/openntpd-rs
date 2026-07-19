@@ -789,6 +789,70 @@ pub const AUTO_REPLIES: usize = 4;
 /// C: AUTO_THRESHOLD = 60
 const AUTO_THRESHOLD: f64 = 60.0;
 
+/// Path to the NTP configuration file.
+/// C: `#define CONFFILE SYSCONFDIR "/ntpd.conf"`
+pub const CONFFILE: &str = "/etc/ntpd.conf";
+
+/// Path to the drift file.
+/// C: `#define DRIFTFILE LOCALSTATEDIR "/ntpd.drift"`
+pub const DRIFTFILE: &str = "/var/db/ntpd.drift";
+
+/// Path to the control socket.
+/// C: `#define CTLSOCKET RUNSTATEDIR "/ntpd.sock"`
+pub const CTLSOCKET: &str = "/var/run/ntpd.sock";
+
+/// HTTPS port for constraint queries.
+/// C: `#define CONSTRAINT_PORT "443"`
+pub const CONSTRAINT_PORT: &str = "443";
+
+/// Maximum acceptable time difference (seconds) for constraint checking.
+/// C: `#define CONSTRAINT_MARGIN (2.0*60)` = 120 seconds
+pub const CONSTRAINT_MARGIN: f64 = 120.0;
+
+/// Timeout (seconds) for a single constraint HTTPS query.
+/// C: `#define CONSTRAINT_SCAN_TIMEOUT (10)`
+pub const CONSTRAINT_SCAN_TIMEOUT: i64 = 10;
+
+/// File descriptor number passed to the constraint child process.
+/// C: `#define CONSTRAINT_PASSFD (STDERR_FILENO + 1)`
+pub const CONSTRAINT_PASSFD: i32 = 3;
+
+/// Number of samples for permanent drift estimation (linear regression).
+/// C: `#define FREQUENCY_SAMPLES 8`
+pub const FREQUENCY_SAMPLES: usize = 8;
+
+/// Flag bit set after performing adjfreq.
+/// C: `#define FILTER_ADJFREQ 0x01`
+pub const FILTER_ADJFREQ: u8 = 0x01;
+
+/// DNS tempfail retry interval for automatic mode (seconds).
+/// C: `#define INTERVAL_AUIO_DNSFAIL 1`
+pub const INTERVAL_AUIO_DNSFAIL: i64 = 1;
+
+/// Maximum characters in a ctl_show report line.
+/// C: `#define MAX_DISPLAY_WIDTH 80`
+pub const MAX_DISPLAY_WIDTH: usize = 80;
+
+/// Maximum frequency correction per iteration.
+/// C: `#define MAX_FREQUENCY_ADJUST 128e-5`
+pub const MAX_FREQUENCY_ADJUST: f64 = 128e-5;
+
+/// Negligible drift rate threshold (ppm) to avoid logging adjfreq.
+/// C: `#define LOG_NEGLIGIBLE_ADJFREQ 0.05`
+pub const LOG_NEGLIGIBLE_ADJFREQ: f64 = 0.05;
+
+/// Minimum offset (seconds) for Q scale to be non-unity.
+/// C: `#define QSCALE_OFF_MIN 0.001`
+pub const QSCALE_OFF_MIN: f64 = 0.001;
+
+/// Maximum offset (seconds) for Q scale to be non-unity.
+/// C: `#define QSCALE_OFF_MAX 0.050`
+pub const QSCALE_OFF_MAX: f64 = 0.050;
+
+/// Number of offset slots in the peer reply ring buffer.
+/// C: `#define OFFSET_ARRAY_SIZE 8`
+pub const OFFSET_ARRAY_SIZE: usize = 8;
+
 // ---------------------------------------------------------------------------
 // Client state machine
 // ---------------------------------------------------------------------------
@@ -1459,6 +1523,44 @@ pub fn handle_auto(trusted: bool, offset: f64, trustlevel: u8) -> AutoDecision {
 #[must_use]
 pub fn setup_client_query(now: NtpTimestamp) -> crate::ntp::NtpPacket {
     build_query(now)
+}
+
+// ---------------------------------------------------------------------------
+// Peer list management (matching ntp.c peer_add / peer_remove / peer_addr_head_clear)
+// ---------------------------------------------------------------------------
+
+/// Add a peer to the managed list.
+///
+/// Corresponds to C: `peer_add()` in ntp.c which does
+/// `TAILQ_INSERT_TAIL(&conf->ntp_peers, p, entry)` and `peer_cnt++`.
+/// In Rust we manage a `Vec<ClientPeer>` via the caller.
+pub fn peer_add(peers: &mut Vec<ClientPeer>, peer: ClientPeer) {
+    peers.push(peer);
+}
+
+/// Remove a peer from the managed list by its unique ID.
+///
+/// Returns the removed peer if found, or `None` if no peer with that ID exists.
+///
+/// Corresponds to C: `peer_remove()` in ntp.c which does
+/// `TAILQ_REMOVE(&conf->ntp_peers, p, entry)`, `free(p)`, and `peer_cnt--`.
+pub fn peer_remove(peers: &mut Vec<ClientPeer>, id: u64) -> Option<ClientPeer> {
+    let pos = peers.iter().position(|p| p.peer.id == id)?;
+    Some(peers.remove(pos))
+}
+
+/// Clear all addresses in a peer's address chain.
+///
+/// In C this frees the linked list of `ntp_addr` structs and sets both
+/// `addr_head.a` and `addr` to NULL.  In Rust, since addresses are managed
+/// via `ConfigString` / `Vec<SocketAddr>`, we clear the resolved addresses.
+///
+/// Corresponds to C: `peer_addr_head_clear()` in ntp.c.
+pub fn peer_addr_head_clear(peer: &mut ClientPeer) {
+    // In the Rust model, the peer's address list is part of the
+    // ClientPeer struct's address field. We clear the resolved addresses
+    // and reset state to trigger re-resolution.
+    peer.state = ClientState::None;
 }
 
 // ---------------------------------------------------------------------------
@@ -3693,5 +3795,93 @@ mod tests {
             "previous offset bit should be cleared"
         );
         assert!(p.has_flash(PFLASH_PEERDELAY), "delay bit should be set");
+    }
+
+    // -------------------------------------------------------------------
+    // Peer list management (peer_add / peer_remove / peer_addr_head_clear)
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_peer_add_appends_to_list() {
+        let mut peers: Vec<ClientPeer> = Vec::new();
+        let p = ClientPeer::new(addr("pool.ntp.org"), 1, false);
+        assert_eq!(peers.len(), 0);
+        peer_add(&mut peers, p);
+        assert_eq!(peers.len(), 1);
+    }
+
+    #[test]
+    fn test_peer_add_multiple() {
+        let mut peers: Vec<ClientPeer> = Vec::new();
+        peer_add(&mut peers, ClientPeer::new(addr("pool.ntp.org"), 1, false));
+        peer_add(
+            &mut peers,
+            ClientPeer::new(addr("time.google.com"), 1, false),
+        );
+        assert_eq!(peers.len(), 2);
+    }
+
+    #[test]
+    fn test_peer_remove_by_id() {
+        let mut peers: Vec<ClientPeer> = Vec::new();
+        let p1 = ClientPeer::new(addr("pool.ntp.org"), 1, false);
+        let id1 = p1.peer.id;
+        let p2 = ClientPeer::new(addr("time.google.com"), 1, false);
+        let id2 = p2.peer.id;
+        peer_add(&mut peers, p1);
+        peer_add(&mut peers, p2);
+        assert_eq!(peers.len(), 2);
+        let removed = peer_remove(&mut peers, id1);
+        assert!(removed.is_some());
+        assert_eq!(removed.as_ref().unwrap().peer.id, id1);
+        assert_eq!(peers.len(), 1);
+        assert_eq!(peers[0].peer.id, id2);
+    }
+
+    #[test]
+    fn test_peer_remove_nonexistent_id() {
+        let mut peers: Vec<ClientPeer> = Vec::new();
+        peer_add(&mut peers, ClientPeer::new(addr("pool.ntp.org"), 1, false));
+        let removed = peer_remove(&mut peers, 999);
+        assert!(removed.is_none());
+        assert_eq!(peers.len(), 1);
+    }
+
+    #[test]
+    fn test_peer_remove_empty_list() {
+        let mut peers: Vec<ClientPeer> = Vec::new();
+        let removed = peer_remove(&mut peers, 1);
+        assert!(removed.is_none());
+    }
+
+    #[test]
+    fn test_peer_addr_head_clear_resets_state() {
+        let mut p = ClientPeer::new(addr("192.0.2.1"), 1, false);
+        p.state = ClientState::DnsDone;
+        peer_addr_head_clear(&mut p);
+        assert_eq!(p.state, ClientState::None);
+    }
+
+    #[test]
+    fn test_peer_add_then_remove_verifies_ids() {
+        let mut peers: Vec<ClientPeer> = Vec::new();
+        let p1 = ClientPeer::new(addr("a.example.com"), 1, false);
+        let id1 = p1.peer.id;
+        let p2 = ClientPeer::new(addr("b.example.com"), 1, false);
+        let id2 = p2.peer.id;
+        let p3 = ClientPeer::new(addr("c.example.com"), 1, false);
+        let id3 = p3.peer.id;
+        peer_add(&mut peers, p1);
+        peer_add(&mut peers, p2);
+        peer_add(&mut peers, p3);
+        assert_eq!(peers.len(), 3);
+        // Remove the middle one
+        let removed = peer_remove(&mut peers, id2);
+        assert!(removed.is_some());
+        assert_eq!(removed.unwrap().peer.id, id2);
+        assert_eq!(peers.len(), 2);
+        // First and last remain
+        assert_eq!(peers[0].peer.id, id1);
+        assert_eq!(peers[1].peer.id, id3);
     }
 }

@@ -1201,6 +1201,17 @@ impl NtpChildProcess {
 // Free functions
 // ---------------------------------------------------------------------------
 
+/// Signal handler for the NTP child process.
+///
+/// Sets a quit flag on `SIGINT` and `SIGTERM`.  Corresponds to C:
+/// `ntp_sighdlr()` in `ntp.c`.
+pub fn ntp_sighdlr(sig: i32) -> bool {
+    match sig {
+        libc::SIGINT | libc::SIGTERM => true, // signal received, should quit
+        _ => false,
+    }
+}
+
 /// Compare two peers by their offset for median selection.
 ///
 /// Corresponds to C: `offset_compare()`.
@@ -1819,5 +1830,28 @@ mod tests {
             !child.config.settime,
             "settime should be cleared after probe failure"
         );
+    }
+
+    // -------------------------------------------------------------------
+    // ntp_sighdlr
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn test_ntp_sighdlr_sigint() {
+        assert!(ntp_sighdlr(libc::SIGINT));
+    }
+
+    #[test]
+    fn test_ntp_sighdlr_sigterm() {
+        assert!(ntp_sighdlr(libc::SIGTERM));
+    }
+
+    #[test]
+    fn test_ntp_sighdlr_other_signals() {
+        assert!(!ntp_sighdlr(libc::SIGHUP));
+        assert!(!ntp_sighdlr(libc::SIGPIPE));
+        assert!(!ntp_sighdlr(libc::SIGCHLD));
+        assert!(!ntp_sighdlr(libc::SIGUSR1));
+        assert!(!ntp_sighdlr(999));
     }
 }

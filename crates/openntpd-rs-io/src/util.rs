@@ -231,8 +231,13 @@ pub fn log_getverbose() -> u8 {
     VERBOSE.load(std::sync::atomic::Ordering::Acquire)
 }
 
-/// Internal: dispatch a message to stderr and/or syslog.
-fn vlog(priority: i32, msg: &str) {
+/// Core logging function: dispatch a message to stderr and/or syslog.
+///
+/// This is the Rust equivalent of OpenNTPD's `vlog()`.  In C the function
+/// takes a `va_list`; here we accept a pre-formatted `&str`.
+///
+/// Corresponds to OpenNTPD's `vlog()` in `log.c`.
+pub fn vlog(priority: i32, msg: &str) {
     let state = LOG_STATE.lock().unwrap();
     let dest = state.dest;
 
@@ -253,6 +258,15 @@ fn vlog(priority: i32, msg: &str) {
             libc::syslog(priority, b"%s\0".as_ptr() as *const i8, cmsg.as_ptr());
         }
     }
+}
+
+/// Log a message with the given syslog priority.
+///
+/// This is a thin wrapper around [`vlog`] matching the C `logit()` signature.
+///
+/// Corresponds to OpenNTPD's `logit()` in `log.c`.
+pub fn logit(priority: i32, msg: &str) {
+    vlog(priority, msg);
 }
 
 /// Log an info message (syslog `LOG_INFO`).
@@ -578,5 +592,51 @@ mod tests {
         assert_eq!(dest_to_bits(LogDest::StdErr), LOG_TO_STDERR);
         assert_eq!(dest_to_bits(LogDest::SysLog), LOG_TO_SYSLOG);
         assert_eq!(dest_to_bits(LogDest::Both), LOG_TO_STDERR | LOG_TO_SYSLOG);
+    }
+
+    // ------------------------------------------------------------------
+    // logit / vlog (public wrappers matching C logit() / vlog())
+    // ------------------------------------------------------------------
+
+    #[test]
+    fn test_logit_calls_vlog() {
+        // logit is a thin wrapper; smoke test it doesn't panic.
+        logit(libc::LOG_INFO, "logit test message");
+    }
+
+    #[test]
+    fn test_vlog_public_api() {
+        // vlog is now public; smoke test it doesn't panic.
+        vlog(libc::LOG_DEBUG, "vlog test message");
+    }
+
+    #[test]
+    fn test_logit_stderr_does_not_crash() {
+        // Even if log_init hasn't been called, default stderr should work.
+        logit(libc::LOG_WARNING, "test stderr logit");
+    }
+
+    #[test]
+    fn test_logit_syslog_does_not_crash() {
+        // Initialize syslog-like destination.
+        log_init(LogDest::SysLog, 0, libc::LOG_DAEMON);
+        logit(libc::LOG_INFO, "test syslog logit");
+        // Reset to stderr for other tests.
+        log_init(LogDest::StdErr, 0, libc::LOG_DAEMON);
+    }
+
+    #[test]
+    fn test_vlog_multiple_priorities() {
+        let priorities = [
+            libc::LOG_ERR,
+            libc::LOG_WARNING,
+            libc::LOG_INFO,
+            libc::LOG_DEBUG,
+            libc::LOG_CRIT,
+        ];
+        for pri in priorities {
+            // Should not panic for any standard priority.
+            vlog(pri, &format!("vlog test priority {}", pri));
+        }
     }
 }

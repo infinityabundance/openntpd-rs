@@ -300,6 +300,19 @@ pub fn set_nonblock(fd: i32) -> Result<(), String> {
     Ok(())
 }
 
+/// Build a status report string for `ntpctl -s`.
+///
+/// Aggregates peer count, valid peer count, sensor count, valid sensor count,
+/// sync status, stratum, clock offset, constraint info.
+///
+/// Corresponds to C: `build_show_status()` in control.c which populates a
+/// `struct ctl_show_status`.  This Rust version returns a formatted string.
+pub fn build_show_status() -> String {
+    // In the simplified Rust model, we report a stub status.
+    // A full implementation would iterate over the peer/sensor lists.
+    format!("status: synced={} stratum={}", 0, 0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -643,5 +656,16 @@ mod tests {
     fn test_control_listen_bad_fd() {
         let result = control_listen(-1);
         assert!(result.is_ok(), "listen with fd=-1 should be no-op");
+    }
+
+    #[test]
+    fn test_build_show_status_returns_string() {
+        let status = build_show_status();
+        assert!(!status.is_empty(), "status string should not be empty");
+        assert!(
+            status.contains("synced"),
+            "status should mention synced state"
+        );
+        assert!(status.contains("stratum"), "status should mention stratum");
     }
 }

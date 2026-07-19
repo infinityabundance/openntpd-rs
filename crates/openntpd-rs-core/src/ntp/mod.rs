@@ -48,8 +48,38 @@ pub const NTP_VERSION: u8 = 4;
 /// NTP timestamp era in seconds (2³²).
 pub const NTP_ERA: u64 = 0x1_0000_0000;
 
+/// JAN_1970 — Seconds between NTP epoch (1900-01-01) and Unix epoch (1970-01-01).
+/// Same as [`NTP_UNIX_EPOCH_DELTA`]; this alias matches the C `ntp.h` name.
+pub const JAN_1970: u64 = 2_208_988_800;
+
 /// Seconds between 1900-01-01 (NTP epoch) and 1970-01-01 (Unix epoch).
 pub const NTP_UNIX_EPOCH_DELTA: u64 = 2_208_988_800;
+
+/// NTP long/timestamp format denominator (2³²).
+/// Used for converting between NTP fixed-point and `f64`.
+/// C: `#define L_DENOMINATOR (UINT32_MAX + 1ULL)`
+pub const L_DENOMINATOR: f64 = 4_294_967_296.0;
+
+/// NTP short format denominator (2¹⁶).
+/// Used for converting short fixed-point values to `f64`.
+/// C: `#define S_DENOMINATOR (UINT16_MAX + 1)`
+pub const S_DENOMINATOR: f64 = 65_536.0;
+
+/// Seconds in one NTP era (2³² seconds ≈ 136 years).
+/// C: `#define SECS_IN_ERA (UINT32_MAX + 1ULL)`
+pub const SECS_IN_ERA: u64 = 4_294_967_296;
+
+/// Leap indicator mask — top 2 bits of byte 0.
+/// C: `#define LIMASK (3 << 6)`
+pub const LIMASK: u8 = 0xC0;
+
+/// Mode field mask — bottom 3 bits of byte 0.
+/// C: `#define MODEMASK (7 << 0)`
+pub const MODEMASK: u8 = 0x07;
+
+/// Version number mask — bits 3-5 of byte 0.
+/// C: `#define VERSIONMASK (7 << 3)`
+pub const VERSIONMASK: u8 = 0x38;
 
 /// Maximum dispersion (16 seconds).
 pub const NTP_MAX_DISPERSION: f64 = 16.0;

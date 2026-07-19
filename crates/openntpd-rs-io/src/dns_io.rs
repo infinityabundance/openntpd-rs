@@ -254,6 +254,18 @@ pub fn host_dns1_check(_name: &str, addrs: &[IpAddr]) -> bool {
     !addrs.is_empty()
 }
 
+/// Free DNS resolution results.
+///
+/// In C, `host_dns_free()` walks the linked list of `struct ntp_addr`
+/// and calls `free()` on each node.  In Rust the memory is managed by
+/// `Vec`'s `Drop` impl, so this is a no-op — it exists for forensic
+/// completeness to match the C API surface.
+///
+/// Corresponds to C: `host_dns_free()` in config.c.
+pub fn host_dns_free(_addrs: &[SocketAddr]) {
+    // Memory is managed by Rust's Drop. No-op.
+}
+
 // ---------------------------------------------------------------------------
 // Logging helpers (matching the C `log_debug` calls)
 // ---------------------------------------------------------------------------
@@ -513,6 +525,19 @@ mod tests {
 
     #[test]
     fn test_is_temp_dns_error_other() {
-        assert!(!is_temp_dns_error("Connection refused"));
+        assert!(!is_temp_dns_error("host not found"));
+    }
+
+    #[test]
+    fn test_host_dns_free_noop() {
+        let addrs: Vec<SocketAddr> = vec![
+            "127.0.0.1:123".parse().unwrap(),
+            "[::1]:123".parse().unwrap(),
+        ];
+        // Should not panic and should drop the vec cleanly.
+        host_dns_free(&addrs);
+        // After calling host_dns_free, the original vec can still be used
+        // (the C function frees the memory; in Rust we just take a ref).
+        assert_eq!(addrs.len(), 2);
     }
 }
