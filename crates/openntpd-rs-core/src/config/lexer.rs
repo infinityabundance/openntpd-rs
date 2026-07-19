@@ -333,6 +333,12 @@ impl<'a> Lexer<'a> {
                     _ => break,
                 }
             }
+            // Do NOT consume raw continuation if a delimiter is pending
+            // in logical pushback — the pushed byte must be emitted as
+            // a token before any following input is consumed.
+            if self.logical_pushback.is_some() {
+                break;
+            }
             let saved = self.save_cursor();
             match self.peek_raw() {
                 Some(b'\\') => {
@@ -496,6 +502,11 @@ impl<'a> Lexer<'a> {
         } else {
             None
         };
+        let minus_end = if start_negative {
+            Some(self.offset)
+        } else {
+            None
+        };
 
         let mut digits = Vec::new();
         let mut end = self.offset;
@@ -534,19 +545,30 @@ impl<'a> Lexer<'a> {
             if let Some(am) = after_minus {
                 self.restore_cursor(am);
             }
-            return self.make_token(TokenKind::Symbol(b'-'), start, end, line);
+            return self.make_token(
+                TokenKind::Symbol(b'-'),
+                start,
+                minus_end.unwrap_or(end),
+                line,
+            );
         }
 
         let terminator = self.logical_peek();
 
         if digits.is_empty() || !terminator.map_or(true, is_number_terminator) {
             if start_negative {
-                // Negative fallback: return '-' as symbol; remaining
-                // digits become the next token (string).
+                // Negative fallback: return '-' as symbol with span
+                // covering only the minus; remaining digits become the
+                // next token (string).
                 if let Some(am) = after_minus {
                     self.restore_cursor(am);
                 }
-                return self.make_token(TokenKind::Symbol(b'-'), start, end, line);
+                return self.make_token(
+                    TokenKind::Symbol(b'-'),
+                    start,
+                    minus_end.unwrap_or(end),
+                    line,
+                );
             }
             self.restore_cursor(saved);
             return self.lex_unquoted(start, line);
@@ -556,7 +578,7 @@ impl<'a> Lexer<'a> {
             Some(n) => self.make_token(TokenKind::Number(n), start, end, line),
             None => {
                 self.recovering = true;
-                self.error_token(LexErrorKind::NumberOverflow, start, self.offset, line)
+                self.error_token(LexErrorKind::NumberOverflow, start, end, line)
             }
         }
     }
@@ -618,11 +640,12 @@ impl<'a> Lexer<'a> {
                         Some(c) if c == quote || c == b' ' || c == b'\t' => {
                             bytes.push(c);
                         }
-                        // Unknown escape: include both the backslash and
-                        // the following byte (both consumed, no pushback).
-                        Some(c) => {
+                        // Unknown escape: append the backslash and
+                        // reprocess the target byte on the next iteration
+                        // (matching OpenNTPD's lgetc-based pushback).
+                        Some(_) => {
                             bytes.push(b'\\');
-                            bytes.push(c);
+                            self.offset = self.offset.saturating_sub(1);
                         }
                         None => {
                             self.recovering = true;
@@ -1113,13 +1136,32 @@ mod tests {
         );
     }
     #[test]
-    fn quoted_double_backslash_produces_two() {
-        // Two backslashes in sequence: each is an unknown escape,
-        // both \ chars appear in the output.
-        let mut l = Lexer::new(b"\"\\\\\"");
+    fn quoted_two_backslashes_before_quote_is_unterminated() {
+        // "\\" -> first backslash is escape, second backslash is
+        // unknown -> \ pushed, second \ reprocessed as escape ->
+        // " escaped -> no closing quote remains.
+        assert_eq!(kinds(b"\"\\\\\""), &["err"]);
+    }
+    #[test]
+    fn quoted_two_backslashes_then_two_quotes() {
+        // "\\"" -> \ + \ (unknown -> \ pushed, \ reprocessed),
+        // then \ + " (known -> " pushed), then " closes
+        // Result: String containing backslash + quote.
+        let mut l = Lexer::new(b"\"\\\\\"\"");
+        let tok = l.next_token();
+        assert_eq!(
+            tok.kind,
+            TokenKind::String(ConfigString::new(b"\\\"".to_vec()).unwrap()) // b"\\\"" is two bytes: backslash (0x5C) + quote (0x22)
+        );
+    }
+    #[test]
+    fn quoted_unknown_escape_reprocesses_target() {
+        // \x in a quoted string: \ pushes, x is reprocessed as
+        // regular character -> \\x becomes \x in output.
+        let mut l = Lexer::new(b"\"\\x\"");
         assert_eq!(
             l.next_token().kind,
-            TokenKind::String(ConfigString::new(b"\\\\".to_vec()).unwrap())
+            TokenKind::String(ConfigString::new(b"\\x".to_vec()).unwrap())
         );
     }
 

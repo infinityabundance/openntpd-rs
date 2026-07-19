@@ -229,7 +229,9 @@ fn surfaces() -> Vec<Surface> {
                 "quoted_backslash_before_closing_quote",
                 "quoted_backslash_newline",
                 "quoted_double",
-                "quoted_double_backslash_produces_two",
+                "quoted_two_backslashes_before_quote_is_unterminated",
+                "quoted_two_backslashes_then_two_quotes",
+                "quoted_unknown_escape_reprocesses_target",
                 "quoted_empty",
                 "quoted_escaped_nul_returns_error",
                 "quoted_escaped_quote",
@@ -350,13 +352,22 @@ fn generate_negative_capabilities(docs_gen: &Path) -> anyhow::Result<()> {
         "# Negative capabilities\n\nThings `openntpd-rs` deliberately does **not** do yet.\n\n",
     );
 
+    let lexer_tests = surfaces()
+        .iter()
+        .find(|surface| surface.rs_module == "config::lexer")
+        .expect("lexer surface exists")
+        .tests
+        .len();
+
     md.push_str("## Implemented — internally tested\n\n| Module | Tests |\n|--------|-------|\n");
     md.push_str("| NTP wire (`ntp`) | 13: wire format, unsigned dispersion, era 0–2 |\n");
     md.push_str("| NTP msg I/O (`ntp::msg`) | 4: exact-length, auth suffix |\n");
     md.push_str("| Utility (`util`) | 12: frequency, Timespec, NaN/Inf/range/overflow |\n");
     md.push_str("| Config AST (`config::directive`) | 31: all newtypes, directives, bounds |\n");
     md.push_str("| Config diagnostics (`config::diagnostic`) | 3: severity, parse result |\n");
-    md.push_str("| Config lexer (`config::lexer`) | 91: cursor, keywords, numbers, quoted strings, NUL rejection, continuation, recovery, char class, length boundaries, backslash handling, negative number limits, escaped-quote opening, spans |\n");
+    md.push_str(&format!(
+        "| Config lexer (`config::lexer`) | {lexer_tests}: cursor, keywords, numbers, quoted strings, NUL rejection, continuation, recovery, char class, length boundaries, backslash handling, negative number limits, escaped-quote opening, spans |\n"
+    ));
     md.push_str("| Clock adjfreq (`io::clock`) | 3: adjtimex conversion, overflow |\n");
     md.push_str("| Socket loopback (`io::socket`) | 6: IPv4/v6, bind options, timestamp |\n\n");
 
@@ -370,7 +381,9 @@ fn generate_negative_capabilities(docs_gen: &Path) -> anyhow::Result<()> {
     md.push_str("| Socket timestamping (`io::socket`) | recvmsg SO_TIMESTAMP written; no behavioral tests. |\n\n");
 
     md.push_str("## Config surfaces\n\n");
-    md.push_str("- **parse.y lexer** (`config::lexer`) — Implemented, 91 tests: cursor, keywords, numbers, quoted strings, NUL rejection, backslash-newline, error recovery, char class, token length boundaries, negative number limits, escaped-quote opening, spans\n");
+    md.push_str(&format!(
+        "- **parse.y lexer** (`config::lexer`) — Implemented, {lexer_tests} tests: cursor, keywords, numbers, quoted strings, NUL rejection, backslash-newline, error recovery, char class, token length boundaries, negative number limits, escaped-quote opening, spans\n"
+    ));
     md.push_str("- **parse.y parser** — **Planned**: directive grammar, semantic validation\n");
     md.push_str("- **config.c runtime lowering** — **Planned**: DNS resolution, peer creation\n\n");
 
