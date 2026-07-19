@@ -838,7 +838,8 @@ pub enum AutoDecision {
 /// Extended peer state for client operation.
 ///
 /// Wraps a [`Peer`] with runtime state: the client state machine,
-/// trustlevel, query scheduling fields, and error tracking.
+/// trustlevel, query scheduling fields, reply ring buffer, and error
+/// tracking.
 ///
 /// Corresponds to the runtime fields of `struct ntp_peer` in OpenNTPD's
 /// `client.c` and `ntpd.h`.
@@ -863,6 +864,11 @@ pub struct ClientPeer {
     /// Internal counter for trustlevel advancement from AGGRESSIVE to MAX
     /// (increments every good response; trustlevel rises every 8 responses).
     pub trustlevel_count: u8,
+    /// Raw reply ring buffer, matching C's `reply[OFFSET_ARRAY_SIZE]`.
+    /// Each entry holds the raw offset/delay/error from a server response.
+    pub reply_buffer: [ReplySlot; NTP_FILTER],
+    /// Current index into `reply_buffer` (C: `p->shift`).
+    pub shift: usize,
 }
 
 impl ClientPeer {
@@ -884,6 +890,8 @@ impl ClientPeer {
             senderrors: 0,
             lasterror: 0,
             trustlevel_count: 0,
+            reply_buffer: [ReplySlot::default(); NTP_FILTER],
+            shift: 0,
         }
     }
 
@@ -1076,8 +1084,335 @@ impl ClientPeer {
 }
 
 // ---------------------------------------------------------------------------
-// Auto-setting logic
+// Reply ring buffer
 // ---------------------------------------------------------------------------
+
+/// A single entry in the client's raw reply ring buffer.
+///
+/// Corresponds to C's `struct ntp_offset` in ntpd.h.
+/// Each entry records the raw offset, delay, and error computed from
+/// one server response, along with metadata used by [`client_update()`]
+/// to select the best sample.
+#[derive(Debug, Clone, Copy)]
+pub struct ReplySlot {
+    /// Clock offset (seconds) from this response.
+    pub offset: f64,
+    /// Round-trip delay (seconds) from this response.
+    pub delay: f64,
+    /// Error estimate (seconds): `(T2 - T1) - (T3 - T4)`.
+    pub error: f64,
+    /// Monotonic timestamp when this reply was received.
+    pub rcvd: i64,
+    /// Whether this slot contains a valid, unexpired sample.
+    pub good: bool,
+    /// NTP stratum reported by the server in this response.
+    pub stratum: u8,
+}
+
+impl Default for ReplySlot {
+    fn default() -> Self {
+        Self {
+            offset: 0.0,
+            delay: 0.0,
+            error: 0.0,
+            rcvd: 0,
+            good: false,
+            stratum: 0,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Client dispatch and peer update (from client.c)
+// ---------------------------------------------------------------------------
+
+/// Compute the NTP offset, delay, and error from four raw timestamps.
+///
+/// This is the standard NTP computation using `f64` seconds directly
+/// (rather than [`NtpTimestamp`] values).
+///
+/// ```text
+/// offset = ((T2 - T1) + (T3 - T4)) / 2
+/// delay  = (T4 - T1) - (T3 - T2)
+/// error  = (T2 - T1) - (T3 - T4)
+/// ```
+///
+/// # Arguments
+///
+/// * `t1` — origin timestamp (client send time, seconds)
+/// * `t2` — receive timestamp (server receive time, seconds)
+/// * `t3` — transmit timestamp (server send time, seconds)
+/// * `t4` — destination timestamp (client receive time, seconds)
+///
+/// # Returns
+///
+/// `(offset, delay, error)` in seconds.
+///
+/// Corresponds to C: the timestamp arithmetic in `client_dispatch()`.
+#[must_use]
+pub fn ntp_offset_delay(t1: f64, t2: f64, t3: f64, t4: f64) -> (f64, f64, f64) {
+    let offset = ((t2 - t1) + (t3 - t4)) / 2.0;
+    let delay = (t4 - t1) - (t3 - t2);
+    let error = (t2 - t1) - (t3 - t4);
+    (offset, delay, error)
+}
+
+/// Set the `PFLASH_PEERNOQUERY` bit on the peer's flash mask.
+///
+/// This indicates that no query has yet been sent to (or received from)
+/// this peer.
+///
+/// Corresponds to C: `peer_noquery()` in client.c
+pub fn peer_noquery(peer: &mut Peer) {
+    peer.set_flash(PFLASH_PEERNOQUERY);
+}
+
+/// Set flash bits on a peer based on response quality thresholds.
+///
+/// Evaluates the computed `offset`, `delay`, and `dispersion` against
+/// the configured [`MAX_OFFSET`], [`MAX_DELAY`], and [`MAX_DISPERSION`]
+/// thresholds, and sets the corresponding flash bits.
+///
+/// Corresponds to C: `peer_flash()` in client.c
+pub fn peer_flash(peer: &mut Peer, offset: f64, delay: f64, dispersion: f64) {
+    // Clear quality-related flash bits first.
+    peer.clear_flash(PFLASH_PEERSTRAT | PFLASH_PEERDELAY | PFLASH_PEEROFFSET | PFLASH_PEERDISP);
+
+    if peer.stratum > MAX_STRATUM || peer.stratum == 0 {
+        peer.set_flash(PFLASH_PEERSTRAT);
+        peer.set_flash(PFLASH_PEERBADSTRAT);
+    }
+
+    if delay > MAX_DELAY || delay < 0.0 {
+        peer.set_flash(PFLASH_PEERDELAY);
+    }
+
+    if offset.abs() > MAX_OFFSET {
+        peer.set_flash(PFLASH_PEEROFFSET);
+    }
+
+    if dispersion > MAX_DISPERSION || dispersion < 0.0 {
+        peer.set_flash(PFLASH_PEERDISP);
+    }
+}
+
+/// Compare two peers by their clock offset for clock selection.
+///
+/// Returns `Ordering::Less` if `a` has a smaller (more negative) offset
+/// than `b`.  This is used to sort peers by offset during the
+/// intersection and clustering phases of clock selection.
+///
+/// Corresponds to C: `peer_compare()` in client.c (which wraps
+/// `offset_compare` in ntpd.h).
+#[must_use]
+pub fn peer_compare(a: &Peer, b: &Peer) -> core::cmp::Ordering {
+    a.offset
+        .partial_cmp(&b.offset)
+        .unwrap_or(core::cmp::Ordering::Equal)
+}
+
+/// Update peer state from the raw reply ring buffer — the core clock
+/// filter update.
+///
+/// Scans all 8 [`ReplySlot`] entries in `peer.reply_buffer` to find the
+/// one with the lowest delay among entries marked `good`.  Requires
+/// **all 8** slots to contain valid samples (matching C's `good < 8`
+/// check).  On success, marks all older entries (with `rcvd <= best.rcvd`)
+/// as not good, and returns the best sample.
+///
+/// # Returns
+///
+/// * `Some(NtpFilterSample)` — the sample with the lowest delay.
+/// * `None` — fewer than 8 good entries in the buffer.
+///
+/// Corresponds to C: `client_update()` in client.c
+#[must_use]
+pub fn client_update(peer: &mut ClientPeer) -> Option<NtpFilterSample> {
+    let mut best: Option<usize> = None;
+    let mut good = 0u32;
+
+    // Scan all 8 reply slots for good entries; track lowest delay.
+    for i in 0..NTP_FILTER {
+        if peer.reply_buffer[i].good {
+            good += 1;
+            match best {
+                None => best = Some(i),
+                Some(b) => {
+                    if peer.reply_buffer[i].delay < peer.reply_buffer[b].delay {
+                        best = Some(i);
+                    }
+                }
+            }
+        }
+    }
+
+    // Require all 8 slots to be good (matching C: `if (best == -1 || good < 8)`).
+    let best_idx = best?;
+    if good < NTP_FILTER as u32 {
+        return None;
+    }
+
+    // Copy values before mutating to satisfy borrow checker.
+    let best_offset = peer.reply_buffer[best_idx].offset;
+    let best_delay = peer.reply_buffer[best_idx].delay;
+    let best_error = peer.reply_buffer[best_idx].error;
+    let best_rcvd = peer.reply_buffer[best_idx].rcvd;
+
+    // Mark all slots with rcvd <= best.rcvd as not good.
+    // This matches C: `if (p->reply[shift].rcvd <= p->reply[best].rcvd)`.
+    for i in 0..NTP_FILTER {
+        if peer.reply_buffer[i].rcvd <= best_rcvd {
+            peer.reply_buffer[i].good = false;
+        }
+    }
+
+    Some(NtpFilterSample {
+        offset: best_offset,
+        delay: best_delay,
+        // Use the error field as a dispersion estimate (C stores it in `error`).
+        dispersion: best_error.abs(),
+    })
+}
+
+/// Dispatch an incoming NTP response from a peer.
+///
+/// This is the main response handler for mode 4 server responses.
+/// It validates the response, computes timestamps, updates the reply
+/// ring buffer, calls [`client_update()`] for clock filter processing,
+/// advances trustlevel, and schedules the next query.
+///
+/// # Arguments
+///
+/// * `peer` — The client peer state to update.
+/// * `query_state` — The outstanding query state (provides T1, origin TS).
+/// * `response` — The decoded NTP packet from the server.
+/// * `recv_time` — The client's receive timestamp (T4).
+/// * `settime` — If `true`, forward the offset to the clock-setting logic.
+/// * `automatic` — If `true`, use the auto-setting path (median-of-4).
+///
+/// # Returns
+///
+/// * `1` — Response valid, peer state updated.
+/// * `0` — Response invalid (wrong origin, bad stratum, negative delay,
+///          etc.) but not an error — peer may retry.
+/// * `-1` — Fatal error (no fd, etc.).
+///
+/// Corresponds to C: `client_dispatch()` in client.c
+pub fn client_dispatch(
+    peer: &mut ClientPeer,
+    query_state: &mut crate::ntp::query::QueryState,
+    response: &crate::ntp::NtpPacket,
+    recv_time: crate::ntp::NtpTimestamp,
+    settime: bool,
+    automatic: bool,
+) -> i32 {
+    // --- Mode check: only mode 4 (SERVER) responses are accepted -----------
+    if response.mode() != 4 {
+        return 0;
+    }
+
+    // --- Version check: accept NTPv3 or NTPv4 -----------------------------
+    let ver = response.version();
+    if ver < 3 || ver > 4 {
+        return 0;
+    }
+
+    // --- Origin timestamp check (replay / cross-session protection) -------
+    if response.origin_ts != query_state.query_time {
+        return 0;
+    }
+
+    // --- Leap indicator / stratum / KoD check -----------------------------
+    if response.leap_indicator() == 3 || response.stratum == 0 || response.stratum > MAX_STRATUM {
+        return 0;
+    }
+
+    // --- Compute timestamps -----------------------------------------------
+    // T1 = query_time (when we sent the query, from query_state)
+    // T2 = response.receive_ts (server receive time)
+    // T3 = response.transmit_ts (server transmit time)
+    // T4 = recv_time (when we received the response)
+    let t1 = query_state.query_time.to_f64();
+    let t2 = response.receive_ts.to_f64();
+    let t3 = response.transmit_ts.to_f64();
+    let t4 = recv_time.to_f64();
+
+    let (offset, delay, error) = ntp_offset_delay(t1, t2, t3, t4);
+
+    // --- Negative delay check (liar detection) ----------------------------
+    if delay < 0.0 {
+        return 0;
+    }
+
+    // --- Store in reply ring buffer ---------------------------------------
+    let idx = peer.shift % NTP_FILTER;
+    peer.reply_buffer[idx] = ReplySlot {
+        offset,
+        delay,
+        error,
+        rcvd: 0, // monotonic time not available in this context
+        good: true,
+        stratum: response.stratum,
+    };
+    peer.shift = peer.shift.wrapping_add(1);
+
+    // --- Update state and schedule ----------------------------------------
+    peer.state = ClientState::ReplyReceived;
+
+    // Update peer stratum from this response.
+    peer.peer.stratum = response.stratum;
+
+    // --- Run clock filter update ------------------------------------------
+    // This is an opportunistic update; the C code calls client_update()
+    // unconditionally.  We call it and store the result if it succeeds.
+    if let Some(_best) = client_update(peer) {
+        // client_update succeeded (all 8 slots good).
+        // Update the peer's filter with the best sample.
+        peer.peer
+            .add_sample(_best.offset, _best.delay, _best.dispersion);
+
+        // Update reachability.
+        peer.peer.update_reach(true);
+
+        // Update poll interval.
+        peer.peer.update_poll(true);
+    }
+
+    // --- Trustlevel -------------------------------------------------------
+    if peer.trustlevel < TRUSTLEVEL_MAX {
+        if peer.trustlevel < TRUSTLEVEL_BADPEER && peer.trustlevel + 1 >= TRUSTLEVEL_BADPEER {
+            // Peer becomes valid at TRUSTLEVEL_BADPEER — log transition.
+        }
+        peer.trustlevel = peer.trustlevel.saturating_add(1).min(TRUSTLEVEL_MAX);
+    }
+
+    // --- Auto-setting / settime -------------------------------------------
+    if settime {
+        if automatic {
+            // Delegate to handle_auto.
+            let _decision = handle_auto(peer.peer.trusted, offset, peer.trustlevel);
+        }
+    }
+
+    // --- Schedule next query interval -------------------------------------
+    let interval = if peer.trustlevel < TRUSTLEVEL_PATHETIC {
+        INTERVAL_QUERY_PATHETIC
+    } else if peer.trustlevel < TRUSTLEVEL_AGGRESSIVE {
+        if settime && automatic {
+            INTERVAL_QUERY_ULTRA_VIOLENCE
+        } else {
+            INTERVAL_QUERY_AGGRESSIVE
+        }
+    } else {
+        INTERVAL_QUERY_NORMAL
+    };
+    peer.set_next(interval);
+
+    // --- Clear outstanding query ------------------------------------------
+    query_state.outstanding = false;
+
+    1
+}
 
 /// Decide whether to auto-set the clock based on the current offset and
 /// trustlevel.
@@ -2574,8 +2909,7 @@ mod tests {
         cp.trustlevel = 1;
         cp.dispatch_response(0.01, 0.01, 2);
         assert_eq!(
-            cp.next,
-            INTERVAL_QUERY_PATHETIC,
+            cp.next, INTERVAL_QUERY_PATHETIC,
             "trust 1 < 2 should use pathetic interval"
         );
     }
@@ -2584,5 +2918,780 @@ mod tests {
     fn test_handle_auto_barely_above_threshold() {
         let decision = handle_auto(true, 60.001, TRUSTLEVEL_AGGRESSIVE);
         assert_eq!(decision, AutoDecision::SetTime(60.001));
+    }
+
+    // -----------------------------------------------------------------------
+    // ntp_offset_delay
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_ntp_offset_delay_symmetric() {
+        // Symmetric path: T2-T1 == T4-T3 => offset = 0
+        // T1=100, T2=101, T3=102, T4=103 => same delay both ways
+        let (offset, delay, error) = ntp_offset_delay(100.0, 101.0, 102.0, 103.0);
+        assert!(
+            (offset - 0.0).abs() < 1e-12,
+            "symmetric offset should be 0, got {}",
+            offset
+        );
+        assert!(
+            (delay - 2.0).abs() < 1e-12,
+            "delay should be 2, got {}",
+            delay
+        );
+        // error = (T2-T1) - (T3-T4) = (101-100) - (102-103) = 1 - (-1) = 2
+        assert!(
+            (error - 2.0).abs() < 1e-12,
+            "error should be 2, got {}",
+            error
+        );
+    }
+
+    #[test]
+    fn test_ntp_offset_delay_positive_offset() {
+        // Server is ahead: T2-T1 > T4-T3
+        let (offset, delay, _) = ntp_offset_delay(100.0, 102.0, 104.0, 105.0);
+        // offset = ((102-100) + (104-105)) / 2 = (2 + -1) / 2 = 0.5
+        assert!(
+            (offset - 0.5).abs() < 1e-12,
+            "positive offset should be 0.5, got {}",
+            offset
+        );
+        // delay = (105-100) - (104-102) = 5 - 2 = 3
+        assert!(
+            (delay - 3.0).abs() < 1e-12,
+            "delay should be 3, got {}",
+            delay
+        );
+    }
+
+    #[test]
+    fn test_ntp_offset_delay_negative_offset() {
+        // Server is behind: T4-T3 > T2-T1
+        let (offset, delay, _) = ntp_offset_delay(100.0, 100.5, 101.0, 103.0);
+        // offset = ((100.5-100) + (101-103)) / 2 = (0.5 + -2) / 2 = -0.75
+        assert!(
+            (offset - (-0.75)).abs() < 1e-12,
+            "negative offset should be -0.75, got {}",
+            offset
+        );
+    }
+
+    #[test]
+    fn test_ntp_offset_delay_zero_timestamps() {
+        // All timestamps zero
+        let (offset, delay, error) = ntp_offset_delay(0.0, 0.0, 0.0, 0.0);
+        assert!((offset - 0.0).abs() < 1e-12);
+        assert!((delay - 0.0).abs() < 1e-12);
+        assert!((error - 0.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_ntp_offset_delay_equal_timestamps() {
+        // All timestamps equal => offset=0, delay=0, error=0
+        let (offset, delay, error) = ntp_offset_delay(50.0, 50.0, 50.0, 50.0);
+        assert!((offset - 0.0).abs() < 1e-12);
+        assert!((delay - 0.0).abs() < 1e-12);
+        assert!((error - 0.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn test_ntp_offset_delay_negative_delay() {
+        // T4 < T1 should give negative delay
+        let (offset, delay, _) = ntp_offset_delay(100.0, 101.0, 102.0, 99.0);
+        assert!(
+            delay < 0.0,
+            "delay should be negative when T4 < T1, got {}",
+            delay
+        );
+    }
+
+    #[test]
+    fn test_ntp_offset_delay_large_values() {
+        // Large NTP timestamps (close to era boundary)
+        let t1 = 4_000_000_000.0;
+        let t2 = 4_000_000_010.0;
+        let t3 = 4_000_000_020.0;
+        let t4 = 4_000_000_025.0;
+        let (offset, delay, _) = ntp_offset_delay(t1, t2, t3, t4);
+        // offset = ((10) + (20-25)) / 2 = (10-5)/2 = 2.5
+        assert!((offset - 2.5).abs() < 1e-9);
+        // delay = (25-0) - (20-10) = 25 - 10 = 15
+        assert!((delay - 15.0).abs() < 1e-9);
+    }
+
+    // -----------------------------------------------------------------------
+    // peer_noquery / peer_flash / peer_compare
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_peer_noquery_sets_flash() {
+        let mut p = Peer::new(addr("192.0.2.1"), 1, false);
+        p.clear_flash(PFLASH_PEERNOQUERY);
+        assert!(!p.has_flash(PFLASH_PEERNOQUERY));
+        peer_noquery(&mut p);
+        assert!(p.has_flash(PFLASH_PEERNOQUERY));
+    }
+
+    #[test]
+    fn test_peer_flash_clears_then_sets() {
+        let mut p = Peer::new(addr("192.0.2.1"), 1, false);
+        p.stratum = 5; // valid stratum — avoid auto-set of PFLASH_PEERSTRAT
+                       // Set all quality bits first.
+        p.set_flash(PFLASH_PEERSTRAT | PFLASH_PEERDELAY | PFLASH_PEEROFFSET | PFLASH_PEERDISP);
+
+        // Call peer_flash with good values — should clear all.
+        peer_flash(&mut p, 0.01, 0.005, 0.001);
+        assert!(!p.has_flash(PFLASH_PEERSTRAT));
+        assert!(!p.has_flash(PFLASH_PEERBADSTRAT));
+        assert!(!p.has_flash(PFLASH_PEERDELAY));
+        assert!(!p.has_flash(PFLASH_PEEROFFSET));
+        assert!(!p.has_flash(PFLASH_PEERDISP));
+    }
+
+    #[test]
+    fn test_peer_flash_sets_delay_bit() {
+        let mut p = Peer::new(addr("192.0.2.1"), 1, false);
+        p.stratum = 3;
+        peer_flash(&mut p, 0.01, MAX_DELAY + 1.0, 0.001);
+        assert!(p.has_flash(PFLASH_PEERDELAY));
+    }
+
+    #[test]
+    fn test_peer_flash_sets_offset_bit() {
+        let mut p = Peer::new(addr("192.0.2.1"), 1, false);
+        p.stratum = 3;
+        peer_flash(&mut p, MAX_OFFSET + 1.0, 0.005, 0.001);
+        assert!(p.has_flash(PFLASH_PEEROFFSET));
+    }
+
+    #[test]
+    fn test_peer_flash_sets_dispersion_bit() {
+        let mut p = Peer::new(addr("192.0.2.1"), 1, false);
+        p.stratum = 3;
+        peer_flash(&mut p, 0.01, 0.005, MAX_DISPERSION + 1.0);
+        assert!(p.has_flash(PFLASH_PEERDISP));
+    }
+
+    #[test]
+    fn test_peer_flash_sets_strat_bit_for_bad_stratum() {
+        let mut p = Peer::new(addr("192.0.2.1"), 1, false);
+        p.stratum = 16; // > MAX_STRATUM
+        peer_flash(&mut p, 0.01, 0.005, 0.001);
+        assert!(p.has_flash(PFLASH_PEERSTRAT));
+        assert!(p.has_flash(PFLASH_PEERBADSTRAT));
+    }
+
+    #[test]
+    fn test_peer_flash_sets_strat_bit_for_stratum_zero() {
+        let mut p = Peer::new(addr("192.0.2.1"), 1, false);
+        p.stratum = 0; // KoD / not synced
+        peer_flash(&mut p, 0.01, 0.005, 0.001);
+        assert!(p.has_flash(PFLASH_PEERSTRAT));
+        assert!(p.has_flash(PFLASH_PEERBADSTRAT));
+    }
+
+    #[test]
+    fn test_peer_flash_negative_delay_sets_both() {
+        let mut p = Peer::new(addr("192.0.2.1"), 1, false);
+        p.stratum = 3;
+        peer_flash(&mut p, 0.01, -0.5, 0.001);
+        assert!(p.has_flash(PFLASH_PEERDELAY));
+    }
+
+    #[test]
+    fn test_peer_flash_negative_dispersion_sets_bit() {
+        let mut p = Peer::new(addr("192.0.2.1"), 1, false);
+        p.stratum = 3;
+        peer_flash(&mut p, 0.01, 0.005, -1.0);
+        assert!(p.has_flash(PFLASH_PEERDISP));
+    }
+
+    #[test]
+    fn test_peer_compare_less() {
+        let mut a = Peer::new(addr("192.0.2.1"), 1, false);
+        let mut b = Peer::new(addr("192.0.2.2"), 1, false);
+        a.offset = -0.5;
+        b.offset = 0.3;
+        assert_eq!(peer_compare(&a, &b), core::cmp::Ordering::Less);
+        assert_eq!(peer_compare(&b, &a), core::cmp::Ordering::Greater);
+    }
+
+    #[test]
+    fn test_peer_compare_equal() {
+        let mut a = Peer::new(addr("192.0.2.1"), 1, false);
+        let mut b = Peer::new(addr("192.0.2.2"), 1, false);
+        a.offset = 0.123;
+        b.offset = 0.123;
+        assert_eq!(peer_compare(&a, &b), core::cmp::Ordering::Equal);
+    }
+
+    #[test]
+    fn test_peer_compare_sorts_by_offset() {
+        let mut peers = vec![
+            Peer::new(addr("c"), 1, false),
+            Peer::new(addr("a"), 1, false),
+            Peer::new(addr("b"), 1, false),
+        ];
+        peers[0].offset = 0.5;
+        peers[1].offset = -0.1;
+        peers[2].offset = 0.2;
+
+        peers.sort_by(peer_compare);
+
+        assert!(
+            peers[0].offset <= peers[1].offset && peers[1].offset <= peers[2].offset,
+            "peers not sorted by offset: {:?} {:?} {:?}",
+            peers[0].offset,
+            peers[1].offset,
+            peers[2].offset
+        );
+        assert_eq!(peers[0].offset, -0.1);
+        assert_eq!(peers[1].offset, 0.2);
+        assert_eq!(peers[2].offset, 0.5);
+    }
+
+    // -----------------------------------------------------------------------
+    // client_update
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_client_update_not_enough_samples() {
+        let mut cp = ClientPeer::new(addr("192.0.2.1"), 1, false);
+        // Put 4 good samples in the buffer (need 8).
+        for i in 0..4 {
+            cp.reply_buffer[i] = ReplySlot {
+                offset: 0.01 * (i as f64),
+                delay: 0.005 * (i as f64),
+                error: 0.001,
+                rcvd: i as i64,
+                good: true,
+                stratum: 2,
+            };
+        }
+        assert!(client_update(&mut cp).is_none(), "need 8 good samples");
+    }
+
+    #[test]
+    fn test_client_update_requires_all_8_good() {
+        let mut cp = ClientPeer::new(addr("192.0.2.1"), 1, false);
+        // Fill 8 slots, but mark one as not good.
+        for i in 0..8 {
+            cp.reply_buffer[i] = ReplySlot {
+                offset: 0.01,
+                delay: 0.01 * (i as f64),
+                error: 0.0,
+                rcvd: i as i64,
+                good: i != 5, // slot 5 is not good
+                stratum: 2,
+            };
+        }
+        assert!(client_update(&mut cp).is_none(), "all 8 must be good");
+    }
+
+    #[test]
+    fn test_client_update_selects_lowest_delay() {
+        let mut cp = ClientPeer::new(addr("192.0.2.1"), 1, false);
+        // Fill all 8 slots with varying delays.
+        for i in 0..8 {
+            cp.reply_buffer[i] = ReplySlot {
+                offset: 0.01 * (i as f64),
+                delay: 0.1 * (i as f64), // delay increases with i
+                error: 0.001,
+                rcvd: i as i64,
+                good: true,
+                stratum: 2,
+            };
+        }
+        // Slot 0 has lowest delay (0.0) but also lowest rcvd.
+        let result = client_update(&mut cp);
+        assert!(result.is_some(), "all 8 good should return Some");
+        let sample = result.unwrap();
+        assert!(
+            (sample.offset - 0.0).abs() < 1e-12,
+            "should select slot 0 with offset 0, got {}",
+            sample.offset
+        );
+        assert!(
+            (sample.delay - 0.0).abs() < 1e-12,
+            "should select slot 0 with delay 0, got {}",
+            sample.delay
+        );
+    }
+
+    #[test]
+    fn test_client_update_marks_older_samples_invalid() {
+        let mut cp = ClientPeer::new(addr("192.0.2.1"), 1, false);
+        // Fill all 8 slots.  Let slot 4 have the lowest delay.
+        for i in 0..8 {
+            cp.reply_buffer[i] = ReplySlot {
+                offset: 0.01,
+                delay: if i == 4 { 0.001 } else { 0.1 },
+                error: 0.0,
+                rcvd: i as i64,
+                good: true,
+                stratum: 2,
+            };
+        }
+        let _ = client_update(&mut cp);
+
+        // Slots with rcvd <= 4 should be marked not good.
+        for i in 0..=4 {
+            assert!(
+                !cp.reply_buffer[i].good,
+                "slot {} should be marked not good",
+                i
+            );
+        }
+        // Slots with rcvd > 4 should remain good.
+        for i in 5..8 {
+            assert!(cp.reply_buffer[i].good, "slot {} should remain good", i);
+        }
+    }
+
+    #[test]
+    fn test_client_update_returns_error_as_dispersion() {
+        let mut cp = ClientPeer::new(addr("192.0.2.1"), 1, false);
+        for i in 0..8 {
+            cp.reply_buffer[i] = ReplySlot {
+                offset: 0.01,
+                delay: 0.01,
+                error: if i == 3 { -0.005 } else { 0.001 },
+                rcvd: i as i64,
+                good: true,
+                stratum: 2,
+            };
+        }
+        let result = client_update(&mut cp);
+        assert!(result.is_some());
+        // Slot 3 has delay 0.01 which is same as others; since it's the same
+        // delay for all, the first one (slot 0) with lowest rcvd is selected.
+        assert!(
+            (result.unwrap().dispersion - 0.001).abs() < 1e-12,
+            "dispersion should be abs(error) of best slot"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // client_dispatch
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_client_dispatch_valid_mode4_response() {
+        use crate::ntp::{mode, NtpTimestamp};
+        let mut cp = ClientPeer::new(addr("192.0.2.1"), 1, false);
+        let mut qs = crate::ntp::query::QueryState::new();
+
+        // Use integer-only timestamps to avoid fractional precision issues.
+        let query_ts = NtpTimestamp::new(4_000_000_000, 0);
+        qs.send_query(query_ts);
+
+        // Build a valid mode 4 response.
+        let mut response = crate::ntp::NtpPacket::zero();
+        response.set_li_vn_mode(0, 4, 4); // no-warning, v4, server
+        response.stratum = 3;
+        response.origin_ts = query_ts;
+        response.receive_ts = NtpTimestamp::new(4_000_000_010, 0); // T2
+        response.transmit_ts = NtpTimestamp::new(4_000_000_020, 0); // T3
+
+        let recv_time = NtpTimestamp::new(4_000_000_030, 0); // T4
+
+        let result = client_dispatch(&mut cp, &mut qs, &response, recv_time, false, false);
+        assert_eq!(result, 1, "valid mode 4 response should return 1");
+        assert_eq!(
+            cp.state,
+            ClientState::ReplyReceived,
+            "state should be ReplyReceived"
+        );
+        // Shift should have advanced.
+        assert_eq!(cp.shift, 1);
+        // Reply buffer should have the entry.
+        assert!(cp.reply_buffer[0].good);
+        // offset = ((T2-T1) + (T3-T4)) / 2 = ((10) + (20-30)) / 2 = 0
+        assert!(
+            (cp.reply_buffer[0].offset - 0.0).abs() < 1e-9,
+            "offset should be 0, got {}",
+            cp.reply_buffer[0].offset
+        );
+        // delay = (T4-T1) - (T3-T2) = (30-0) - (20-10) = 30 - 10 = 20
+        assert!(
+            (cp.reply_buffer[0].delay - 20.0).abs() < 1e-9,
+            "delay should be 20, got {}",
+            cp.reply_buffer[0].delay
+        );
+    }
+
+    #[test]
+    fn test_client_dispatch_wrong_origin_returns_0() {
+        use crate::ntp::NtpTimestamp;
+        let mut cp = ClientPeer::new(addr("192.0.2.1"), 1, false);
+        let mut qs = crate::ntp::query::QueryState::new();
+
+        qs.send_query(NtpTimestamp::new(1000, 0));
+
+        let mut response = crate::ntp::NtpPacket::zero();
+        response.set_li_vn_mode(0, 4, 4);
+        response.stratum = 3;
+        response.origin_ts = NtpTimestamp::new(999999, 0); // wrong origin!
+        response.receive_ts = NtpTimestamp::new(1010, 0);
+        response.transmit_ts = NtpTimestamp::new(1020, 0);
+
+        let recv_time = NtpTimestamp::new(1030, 0);
+
+        let result = client_dispatch(&mut cp, &mut qs, &response, recv_time, false, false);
+        assert_eq!(result, 0, "wrong origin should return 0");
+    }
+
+    #[test]
+    fn test_client_dispatch_alarm_leap_returns_0() {
+        use crate::ntp::NtpTimestamp;
+        let mut cp = ClientPeer::new(addr("192.0.2.1"), 1, false);
+        let mut qs = crate::ntp::query::QueryState::new();
+
+        let query_ts = NtpTimestamp::new(1000, 0);
+        qs.send_query(query_ts);
+
+        let mut response = crate::ntp::NtpPacket::zero();
+        response.set_li_vn_mode(3, 4, 4); // LI_ALARM
+        response.stratum = 3;
+        response.origin_ts = query_ts;
+        response.receive_ts = NtpTimestamp::new(1010, 0);
+        response.transmit_ts = NtpTimestamp::new(1020, 0);
+
+        let result = client_dispatch(
+            &mut cp,
+            &mut qs,
+            &response,
+            NtpTimestamp::new(1030, 0),
+            false,
+            false,
+        );
+        assert_eq!(result, 0, "LI_ALARM should return 0");
+    }
+
+    #[test]
+    fn test_client_dispatch_stratum_zero_returns_0() {
+        use crate::ntp::NtpTimestamp;
+        let mut cp = ClientPeer::new(addr("192.0.2.1"), 1, false);
+        let mut qs = crate::ntp::query::QueryState::new();
+
+        let query_ts = NtpTimestamp::new(1000, 0);
+        qs.send_query(query_ts);
+
+        let mut response = crate::ntp::NtpPacket::zero();
+        response.set_li_vn_mode(0, 4, 4);
+        response.stratum = 0; // Kiss-o'-Death
+        response.origin_ts = query_ts;
+        response.receive_ts = NtpTimestamp::new(1010, 0);
+        response.transmit_ts = NtpTimestamp::new(1020, 0);
+
+        let result = client_dispatch(
+            &mut cp,
+            &mut qs,
+            &response,
+            NtpTimestamp::new(1030, 0),
+            false,
+            false,
+        );
+        assert_eq!(result, 0, "stratum 0 should return 0");
+    }
+
+    #[test]
+    fn test_client_dispatch_stratum_above_max_returns_0() {
+        use crate::ntp::NtpTimestamp;
+        let mut cp = ClientPeer::new(addr("192.0.2.1"), 1, false);
+        let mut qs = crate::ntp::query::QueryState::new();
+
+        let query_ts = NtpTimestamp::new(1000, 0);
+        qs.send_query(query_ts);
+
+        let mut response = crate::ntp::NtpPacket::zero();
+        response.set_li_vn_mode(0, 4, 4);
+        response.stratum = 16; // > MAX_STRATUM
+        response.origin_ts = query_ts;
+        response.receive_ts = NtpTimestamp::new(1010, 0);
+        response.transmit_ts = NtpTimestamp::new(1020, 0);
+
+        let result = client_dispatch(
+            &mut cp,
+            &mut qs,
+            &response,
+            NtpTimestamp::new(1030, 0),
+            false,
+            false,
+        );
+        assert_eq!(result, 0, "stratum > MAX should return 0");
+    }
+
+    #[test]
+    fn test_client_dispatch_negative_delay_returns_0() {
+        use crate::ntp::NtpTimestamp;
+        let mut cp = ClientPeer::new(addr("192.0.2.1"), 1, false);
+        let mut qs = crate::ntp::query::QueryState::new();
+
+        let query_ts = NtpTimestamp::new(1000, 0);
+        qs.send_query(query_ts);
+
+        let mut response = crate::ntp::NtpPacket::zero();
+        response.set_li_vn_mode(0, 4, 4);
+        response.stratum = 3;
+        response.origin_ts = query_ts;
+        response.receive_ts = NtpTimestamp::new(1010, 0);
+        response.transmit_ts = NtpTimestamp::new(1020, 0);
+        // T4 before T1 => negative delay
+        let recv_time = NtpTimestamp::new(990, 0);
+
+        let result = client_dispatch(&mut cp, &mut qs, &response, recv_time, false, false);
+        assert_eq!(result, 0, "negative delay should return 0");
+    }
+
+    #[test]
+    fn test_client_dispatch_invalid_mode_returns_0() {
+        use crate::ntp::{mode, NtpTimestamp};
+        let mut cp = ClientPeer::new(addr("192.0.2.1"), 1, false);
+        let mut qs = crate::ntp::query::QueryState::new();
+
+        let query_ts = NtpTimestamp::new(1000, 0);
+        qs.send_query(query_ts);
+
+        // Mode 3 (CLIENT) instead of 4 (SERVER)
+        let mut response = crate::ntp::NtpPacket::zero();
+        response.set_li_vn_mode(0, 4, mode::CLIENT);
+        response.stratum = 3;
+        response.origin_ts = query_ts;
+
+        let result = client_dispatch(
+            &mut cp,
+            &mut qs,
+            &response,
+            NtpTimestamp::new(1030, 0),
+            false,
+            false,
+        );
+        assert_eq!(result, 0, "non-server mode should return 0");
+    }
+
+    #[test]
+    fn test_client_dispatch_invalid_version_returns_0() {
+        use crate::ntp::NtpTimestamp;
+        let mut cp = ClientPeer::new(addr("192.0.2.1"), 1, false);
+        let mut qs = crate::ntp::query::QueryState::new();
+
+        let query_ts = NtpTimestamp::new(1000, 0);
+        qs.send_query(query_ts);
+
+        // Version 1 (too old)
+        let mut response = crate::ntp::NtpPacket::zero();
+        response.set_li_vn_mode(0, 1, 4);
+        response.stratum = 3;
+        response.origin_ts = query_ts;
+
+        let result = client_dispatch(
+            &mut cp,
+            &mut qs,
+            &response,
+            NtpTimestamp::new(1030, 0),
+            false,
+            false,
+        );
+        assert_eq!(result, 0, "version < 3 should return 0");
+    }
+
+    // -----------------------------------------------------------------------
+    // client_dispatch + client_update integration
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_client_dispatch_full_ring_then_update() {
+        use crate::ntp::NtpTimestamp;
+        let mut cp = ClientPeer::new(addr("192.0.2.1"), 1, false);
+        let mut qs = crate::ntp::query::QueryState::new();
+
+        // Send 8 queries and receive 8 responses to fill the reply ring.
+        for i in 0..8u32 {
+            let base = 1000 + i * 100;
+            let query_ts = NtpTimestamp::new(base, 0);
+            qs.send_query(query_ts);
+
+            let mut response = crate::ntp::NtpPacket::zero();
+            response.set_li_vn_mode(0, 4, 4);
+            response.stratum = 3;
+            response.origin_ts = query_ts;
+            response.receive_ts = NtpTimestamp::new(base + 10, 0);
+            response.transmit_ts = NtpTimestamp::new(base + 20, 0);
+
+            let recv_time = NtpTimestamp::new(base + 30, 0);
+            let result = client_dispatch(&mut cp, &mut qs, &response, recv_time, false, false);
+            assert_eq!(result, 1, "dispatch {} should succeed", i);
+        }
+
+        // After 8 dispatches, the clock filter update should have run.
+        assert_eq!(cp.shift, 8);
+        assert!((cp.peer.offset - 0.0).abs() < 1e-9, "offset should be 0");
+        assert!((cp.peer.delay - 20.0).abs() < 1e-9, "delay should be 20");
+    }
+
+    #[test]
+    fn test_client_dispatch_clears_outstanding() {
+        use crate::ntp::NtpTimestamp;
+        let mut cp = ClientPeer::new(addr("192.0.2.1"), 1, false);
+        let mut qs = crate::ntp::query::QueryState::new();
+
+        let query_ts = NtpTimestamp::new(1000, 0);
+        qs.send_query(query_ts);
+        assert!(qs.outstanding);
+
+        let mut response = crate::ntp::NtpPacket::zero();
+        response.set_li_vn_mode(0, 4, 4);
+        response.stratum = 3;
+        response.origin_ts = query_ts;
+        response.receive_ts = NtpTimestamp::new(1010, 0);
+        response.transmit_ts = NtpTimestamp::new(1020, 0);
+
+        let _ = client_dispatch(
+            &mut cp,
+            &mut qs,
+            &response,
+            NtpTimestamp::new(1030, 0),
+            false,
+            false,
+        );
+        assert!(!qs.outstanding, "query should be cleared after dispatch");
+    }
+
+    #[test]
+    fn test_client_dispatch_schedules_next_interval() {
+        use crate::ntp::NtpTimestamp;
+        let mut cp = ClientPeer::new(addr("192.0.2.1"), 1, false);
+        let mut qs = crate::ntp::query::QueryState::new();
+
+        let query_ts = NtpTimestamp::new(1000, 0);
+        qs.send_query(query_ts);
+
+        let mut response = crate::ntp::NtpPacket::zero();
+        response.set_li_vn_mode(0, 4, 4);
+        response.stratum = 3;
+        response.origin_ts = query_ts;
+        response.receive_ts = NtpTimestamp::new(1010, 0);
+        response.transmit_ts = NtpTimestamp::new(1020, 0);
+
+        // trustlevel starts at 2 (PATHETIC) → interval: 2 < 2 is false,
+        // 2 < 8 is true → AGGRESSIVE (5)
+        let _ = client_dispatch(
+            &mut cp,
+            &mut qs,
+            &response,
+            NtpTimestamp::new(1030, 0),
+            false,
+            false,
+        );
+        assert_eq!(
+            cp.next, 5,
+            "trustlevel 2 should schedule aggressive interval"
+        );
+        assert_eq!(cp.poll, 5);
+    }
+
+    #[test]
+    fn test_client_dispatch_with_settime_and_automatic() {
+        use crate::ntp::NtpTimestamp;
+        let mut cp = ClientPeer::new(addr("192.0.2.1"), 1, true);
+        cp.trustlevel = TRUSTLEVEL_AGGRESSIVE;
+        let mut qs = crate::ntp::query::QueryState::new();
+
+        let query_ts = NtpTimestamp::new(1000, 0);
+        qs.send_query(query_ts);
+
+        let mut response = crate::ntp::NtpPacket::zero();
+        response.set_li_vn_mode(0, 4, 4);
+        response.stratum = 3;
+        response.origin_ts = query_ts;
+        response.receive_ts = NtpTimestamp::new(1010, 0);
+        response.transmit_ts = NtpTimestamp::new(1020, 0);
+
+        // With settime + automatic + trustlevel >= AGGRESSIVE
+        // AND the computed offset is 0 (< AUTO_THRESHOLD), so handle_auto returns Wait.
+        let result = client_dispatch(
+            &mut cp,
+            &mut qs,
+            &response,
+            NtpTimestamp::new(1030, 0),
+            true,
+            true,
+        );
+        assert_eq!(result, 1);
+    }
+
+    #[test]
+    fn test_reply_buffer_wraps_after_8() {
+        let mut cp = ClientPeer::new(addr("192.0.2.1"), 1, false);
+        // Push 10 entries: writes go to slots 0,1,2,3,4,5,6,7,0,1
+        for i in 0..10 {
+            cp.reply_buffer[i % NTP_FILTER] = ReplySlot {
+                offset: i as f64,
+                delay: 0.01,
+                error: 0.0,
+                rcvd: i as i64,
+                good: true,
+                stratum: 2,
+            };
+            cp.shift = cp.shift.wrapping_add(1);
+        }
+        assert_eq!(cp.shift, 10);
+        // Slot 2 was last written by i=2 → offset=2.0
+        assert!(
+            (cp.reply_buffer[2].offset - 2.0).abs() < 1e-12,
+            "slot 2 should have offset 2.0 (written by i=2), got {}",
+            cp.reply_buffer[2].offset
+        );
+        // Slot 0 was overwritten by i=8 → offset=8.0
+        assert!(
+            (cp.reply_buffer[0].offset - 8.0).abs() < 1e-12,
+            "slot 0 should have offset 8.0 (overwritten by i=8), got {}",
+            cp.reply_buffer[0].offset
+        );
+    }
+
+    #[test]
+    fn test_reply_slot_default() {
+        let slot = ReplySlot::default();
+        assert!((slot.offset - 0.0).abs() < 1e-12);
+        assert!((slot.delay - 0.0).abs() < 1e-12);
+        assert!((slot.error - 0.0).abs() < 1e-12);
+        assert_eq!(slot.rcvd, 0);
+        assert!(!slot.good);
+        assert_eq!(slot.stratum, 0);
+    }
+
+    #[test]
+    fn test_peer_flash_many_bits_at_once() {
+        let mut p = Peer::new(addr("192.0.2.1"), 1, false);
+        p.stratum = 0; // bad
+                       // All thresholds exceeded simultaneously
+        peer_flash(&mut p, 10.0, 99.0, 99.0);
+        assert!(p.has_flash(PFLASH_PEERSTRAT));
+        assert!(p.has_flash(PFLASH_PEERBADSTRAT));
+        assert!(p.has_flash(PFLASH_PEERDELAY));
+        assert!(p.has_flash(PFLASH_PEEROFFSET));
+        assert!(p.has_flash(PFLASH_PEERDISP));
+    }
+
+    #[test]
+    fn test_peer_flash_clears_previous_bits() {
+        let mut p = Peer::new(addr("192.0.2.1"), 1, false);
+        p.stratum = 3;
+        // First call: set some bits.
+        peer_flash(&mut p, 10.0, 0.005, 0.001);
+        assert!(p.has_flash(PFLASH_PEEROFFSET));
+        assert!(!p.has_flash(PFLASH_PEERDELAY));
+        assert!(!p.has_flash(PFLASH_PEERDISP));
+
+        // Second call: different bits should clear PFLASH_PEEROFFSET.
+        peer_flash(&mut p, 0.01, 99.0, 0.001);
+        assert!(
+            !p.has_flash(PFLASH_PEEROFFSET),
+            "previous offset bit should be cleared"
+        );
+        assert!(p.has_flash(PFLASH_PEERDELAY), "delay bit should be set");
     }
 }

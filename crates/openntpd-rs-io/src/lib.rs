@@ -24,6 +24,7 @@ pub mod dns_child;
 pub mod dns_io;
 pub mod file;
 pub mod imsg;
+pub mod ntp_child;
 pub mod privsep;
 pub mod process;
 pub mod sensor_io;
