@@ -20,15 +20,24 @@
 
 use std::process::ExitCode;
 
+use openntpd_rs_d::{CliError, EXIT_ERROR, EXIT_UNIMPLEMENTED};
+
 const DEFAULT_CONFIG: &str = "/etc/ntpd.conf";
 
 fn main() -> ExitCode {
+    let prog = std::env::args().next().unwrap_or_else(|| "ntpd".into());
+
     let (args, extra) = match openntpd_rs_d::parse_args() {
         Ok(a) => a,
-        Err(code) => return ExitCode::from(code),
+        Err(CliError::UnknownFlag(flag)) => {
+            eprintln!("{prog}: unknown flag '{flag}'");
+            return ExitCode::from(EXIT_ERROR);
+        }
+        Err(CliError::MissingArgument(flag)) => {
+            eprintln!("{prog}: {flag} requires argument");
+            return ExitCode::from(EXIT_ERROR);
+        }
     };
-
-    let prog = std::env::args().next().unwrap_or_else(|| "ntpd".into());
 
     // Deprecated flags
     let mut saw_deprecated = false;
@@ -54,7 +63,7 @@ fn main() -> ExitCode {
             for err in &result.errors {
                 eprintln!("{prog}: {err}");
             }
-            ExitCode::from(openntpd_rs_d::EXIT_CONFIG)
+            ExitCode::from(EXIT_ERROR)
         }
     } else {
         let config_path = args.config_path.as_deref().unwrap_or(DEFAULT_CONFIG);
@@ -68,7 +77,7 @@ fn main() -> ExitCode {
         }
 
         eprintln!("{prog}: daemon mode not yet implemented");
-        eprintln!("{prog}: exiting with code {}.", openntpd_rs_d::EXIT_CONFIG);
-        ExitCode::from(openntpd_rs_d::EXIT_CONFIG)
+        eprintln!("{prog}: exiting with code {EXIT_UNIMPLEMENTED}.");
+        ExitCode::from(EXIT_UNIMPLEMENTED)
     }
 }
