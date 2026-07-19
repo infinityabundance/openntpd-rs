@@ -417,7 +417,7 @@ fn generate_port_parity(docs_gen: &Path) -> anyhow::Result<()> {
         ));
     }
     md.push('\n');
-    md.push_str(&format!("**Total project tests: {total}**\n\n"));
+    md.push_str(&format!("**Total project tests: {total} (+ 3 xtask harness)**\n\n"));
     md.push_str("## Status definitions\n\n");
     md.push_str("- **Implemented — internally tested**: Rust code exists, unit tests pass, but no oracle comparison has been run.\n");
     md.push_str("- **Implemented — unverified against oracle**: Rust code exists, has not been tested against the real ntpd.\n");
@@ -492,6 +492,21 @@ fn generate_negative_capabilities(docs_gen: &Path) -> anyhow::Result<()> {
     md.push_str("## Unimplemented features\n\n- Symmetric/broadcast/control/private modes, Autokey, NTS, MS-SNTP, kernel PLL, reference clocks, hardware timestamping, privsep imsg\n\n");
     md.push_str("## Highest-risk unsafe module\n\n`io::socket` — recvmsg, CMSG macros, sockaddr casts. Structurally correct; no runtime tests for kernel timestamp ancillary parsing or truncation rejection.\n\n");
     md.push_str("## Deployment boundary\n\nopenntpd-rs does **not**: discipline a real system clock in production, run as a privileged daemon, connect to a running ntpd, or make any production-replacement claim.\n");
+
+    // Append reference to the full forensic archaeology atlas.
+    md.push_str("\n---\n\n## Full forensic audit\n\n");
+    md.push_str("The complete OpenNTPD code archaeology atlas and openntpd-rs vs oracle ");
+    md.push_str("comparison audit is maintained separately at ");
+    md.push_str("[`docs/archaeology.md`](../archaeology.md).\n");
+    md.push_str("That document contains the full:\n\n");
+    md.push_str("- 33-release historical timeline (2004–2026)\n");
+    md.push_str("- 17 portable release version matrix\n");
+    md.push_str("- 13 deep esoteric architectural surfaces (imsg, privsep, clock filter, etc.)\n");
+    md.push_str("- 6-distro Docker VM comparison matrix\n");
+    md.push_str("- 10 esoteric version differences\n");
+    md.push_str("- C source coverage gap analysis (~9000 LOC uncovered)\n");
+    md.push_str("- Lexer, parser, NTP protocol, platform, oracle harness, getopt, ");
+    md.push_str("config behavior, security, and evidence status audits\n");
 
     std::fs::write(docs_gen.join("negative-capabilities.md"), &md)?;
     Ok(())

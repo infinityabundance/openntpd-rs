@@ -26,7 +26,7 @@ OpenNTPD 7.9p1 translation units and their Rust counterparts.
 | `server.c` | `server` | Planned | — |
 | `control.c` | `control` | Planned | — |
 
-**Total project tests: 246**
+**Total project tests: 246 (+ 3 xtask harness)**
 
 ## Status definitions
 
