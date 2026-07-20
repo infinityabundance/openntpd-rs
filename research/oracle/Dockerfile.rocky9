@@ -1,0 +1,14 @@
+# Build OpenNTPD 7.9p1 oracle from source — Rocky Linux 9
+FROM rockylinux:9 AS builder
+RUN dnf install -y 'dnf-command(config-manager)' epel-release && dnf config-manager --set-enabled crb && dnf install -y gcc make openssl-devel libretls-devel bison flex wget ca-certificates && dnf clean all
+WORKDIR /build
+RUN wget https://ftp.openbsd.org/pub/OpenBSD/OpenNTPD/openntpd-7.9p1.tar.gz
+RUN echo "091eeb3f4e358e28c3ab2ea58f93d7a0b5758a20d7c8a0418e162e9b2c27addc  openntpd-7.9p1.tar.gz" | sha256sum -c
+RUN tar xzf openntpd-7.9p1.tar.gz
+WORKDIR /build/openntpd-7.9p1
+RUN ./configure && make && make install && strip /usr/local/sbin/ntpd
+
+FROM rockylinux:9
+RUN dnf install -y 'dnf-command(config-manager)' epel-release && dnf config-manager --set-enabled crb && dnf install -y libretls-devel ca-certificates && dnf clean all
+COPY --from=builder /usr/local/sbin/ntpd /usr/local/sbin/ntpd
+RUN ntpd -n -f /dev/null 2>/dev/null; echo "Oracle built OK: $?"

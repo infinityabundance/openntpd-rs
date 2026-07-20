@@ -1,0 +1,16 @@
+# Build OpenNTPD 7.9p1 oracle for FreeBSD 14
+# Requires: docker buildx with qemu-user-static
+# docker run --privileged --rm tonistiigi/binfmt --install all
+FROM --platform=linux/amd64 freebsd:14 AS builder
+
+RUN pkg install -y gcc make wget ca_root_nss bison flex
+WORKDIR /build
+RUN wget https://ftp.openbsd.org/pub/OpenBSD/OpenNTPD/openntpd-7.9p1.tar.gz
+RUN sha256 -c "091eeb3f4e358e28c3ab2ea58f93d7a0b5758a20d7c8a0418e162e9b2c27addc" openntpd-7.9p1.tar.gz
+RUN tar xzf openntpd-7.9p1.tar.gz
+WORKDIR /build/openntpd-7.9p1
+RUN ./configure && make && make install && strip /usr/local/sbin/ntpd
+
+FROM freebsd:14
+COPY --from=builder /usr/local/sbin/ntpd /usr/local/sbin/ntpd
+RUN ntpd -n -f /dev/null 2>/dev/null; echo "Oracle built OK: $?"

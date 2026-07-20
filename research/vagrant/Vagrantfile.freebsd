@@ -1,0 +1,44 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+#
+# Vagrant config for FreeBSD — builds OpenNTPD 7.9p1 from source
+#
+# Usage:
+#   cd research/vagrant
+#   vagrant up freebsd
+#   vagrant ssh freebsd -c "sudo /usr/local/sbin/ntpd -n -f /dev/null; echo 'Oracle built OK: $?'"
+
+Vagrant.configure("2") do |config|
+  config.vm.define "freebsd" do |box|
+    box.vm.box = "generic/freebsd14"
+    box.vm.hostname = "openntpd-oracle"
+
+    box.vm.provider "libvirt" do |lv|
+      lv.memory = 1024
+      lv.cpus = 2
+    end
+
+    box.vm.provider "virtualbox" do |vb|
+      vb.memory = 1024
+      vb.cpus = 2
+    end
+
+    box.vm.synced_folder ".", "/vagrant", disabled: true
+
+    box.vm.provision "shell", inline: <<-SHELL
+      pkg update
+      pkg install -y ca_root_nss gcc bison flex wget
+      cd /tmp
+      wget https://ftp.openbsd.org/pub/OpenBSD/OpenNTPD/openntpd-7.9p1.tar.gz
+      echo "091eeb3f4e358e28c3ab2ea58f93d7a0b5758a20d7c8a0418e162e9b2c27addc  openntpd-7.9p1.tar.gz" > /tmp/openntpd-7.9p1.tar.gz.sha256
+      sha256 -c /tmp/openntpd-7.9p1.tar.gz.sha256
+      tar xzf openntpd-7.9p1.tar.gz
+      cd /tmp/openntpd-7.9p1
+      ./configure
+      make
+      make install
+      strip /usr/local/sbin/ntpd
+      echo "FreeBSD oracle build complete"
+    SHELL
+  end
+end

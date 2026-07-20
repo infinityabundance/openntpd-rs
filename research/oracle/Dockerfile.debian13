@@ -1,0 +1,14 @@
+# Build OpenNTPD 7.9p1 oracle from source — Debian 13 (Trixie)
+FROM debian:trixie-slim AS builder
+RUN apt-get update && apt-get install -y gcc make libssl-dev libtls-dev bison flex wget ca-certificates && rm -rf /var/lib/apt/lists/*
+WORKDIR /build
+RUN wget https://ftp.openbsd.org/pub/OpenBSD/OpenNTPD/openntpd-7.9p1.tar.gz
+RUN echo "091eeb3f4e358e28c3ab2ea58f93d7a0b5758a20d7c8a0418e162e9b2c27addc  openntpd-7.9p1.tar.gz" | sha256sum -c
+RUN tar xzf openntpd-7.9p1.tar.gz
+WORKDIR /build/openntpd-7.9p1
+RUN ./configure && make && make install && strip /usr/local/sbin/ntpd
+
+FROM debian:trixie-slim
+RUN apt-get update && apt-get install -y libtls-dev libssl-dev ca-certificates && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /usr/local/sbin/ntpd /usr/local/sbin/ntpd
+RUN ntpd -n -f /dev/null 2>/dev/null; echo "Oracle built OK: $?"

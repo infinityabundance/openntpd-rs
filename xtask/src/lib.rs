@@ -8,10 +8,14 @@
 //! - `parity`    — Compare against the real `ntpd` oracle.
 //! - `no-orig`   — Verify no original OpenNTPD C source is present.
 //! - `completions` — Generate shell completions.
+//! - `oracle`    — Build Docker oracle VM matrix and run integration tests.
+//! - `ctl-test`  — Run ntpctl integration tests against Docker oracles.
 
 // Re-export subcommand modules.
 pub mod check;
+pub mod ctl_integration;
 pub mod forensic;
 pub mod gen;
 pub mod no_orig;
+pub mod oracle;
 pub mod parity;

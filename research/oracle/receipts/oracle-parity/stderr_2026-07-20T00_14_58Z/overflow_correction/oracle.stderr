@@ -1,0 +1,2 @@
+/tmp/ntpd.conf:1: "99999999999999999999999999999" invalid number: too large
+/tmp/ntpd.conf:1: syntax error

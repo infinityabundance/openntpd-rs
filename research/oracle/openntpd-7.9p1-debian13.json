@@ -1,0 +1,11 @@
+{
+  "implementation": "OpenNTPD",
+  "version": "7.9p1",
+  "source_url": "https://ftp.openbsd.org/pub/OpenBSD/OpenNTPD/openntpd-7.9p1.tar.gz",
+  "source_sha256": "pending",
+  "build_recipe_sha256": "pending",
+  "binary_sha256": "pending",
+  "target": "x86_64-unknown-linux-gnu",
+  "distribution": "debian-13",
+  "build_date": "pending"
+}

@@ -11,11 +11,14 @@ fn main() -> ExitCode {
         eprintln!("Usage: cargo xtask <command>");
         eprintln!();
         eprintln!("Commands:");
-        eprintln!("  gen          Generate documentation");
-        eprintln!("  check        Verify generated docs are fresh");
-        eprintln!("  parity       Compare against real ntpd oracle");
-        eprintln!("  no-orig      Verify no original C source is present");
-        eprintln!("  completions  Generate shell completions");
+        eprintln!("  gen           Generate documentation");
+        eprintln!("  check         Verify generated docs are fresh");
+        eprintln!("  parity        Compare against real ntpd oracle");
+        eprintln!("  no-orig       Verify no original C source is present");
+        eprintln!("  forensic      Generate Doxygen-based forensic parity audit");
+        eprintln!("  completions   Generate shell completions");
+        eprintln!("  oracle        Build Docker oracle VM matrix and run all checks");
+        eprintln!("  ctl-test      Run ntpctl integration tests against Docker oracles");
         return ExitCode::FAILURE;
     }
 
@@ -50,16 +53,30 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             }
         }
+        "oracle" => {
+            if let Err(e) = xtask::oracle::run() {
+                eprintln!("oracle command failed: {e}");
+                return ExitCode::FAILURE;
+            }
+        }
+        "ctl-test" => {
+            if let Err(e) = xtask::ctl_integration::run(&args[2..]) {
+                eprintln!("ctl-test failed: {e}");
+                return ExitCode::FAILURE;
+            }
+        }
         "help" | "--help" | "-h" => {
             eprintln!("Usage: cargo xtask <command>");
             eprintln!();
             eprintln!("Commands:");
-            eprintln!("  gen          Generate documentation");
-            eprintln!("  check        Verify generated docs are fresh");
-            eprintln!("  parity       Compare against real ntpd oracle");
-            eprintln!("  no-orig      Verify no original C source is present");
-            eprintln!("  forensic     Generate Doxygen-based forensic parity audit");
-            eprintln!("  completions  Generate shell completions");
+            eprintln!("  gen           Generate documentation");
+            eprintln!("  check         Verify generated docs are fresh");
+            eprintln!("  parity        Compare against real ntpd oracle");
+            eprintln!("  no-orig       Verify no original C source is present");
+            eprintln!("  forensic      Generate Doxygen-based forensic parity audit");
+            eprintln!("  completions   Generate shell completions");
+            eprintln!("  oracle        Build Docker oracle VM matrix and run all checks");
+            eprintln!("  ctl-test      Run ntpctl integration tests against Docker oracles");
             return ExitCode::SUCCESS;
         }
         other => {
