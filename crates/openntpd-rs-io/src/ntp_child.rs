@@ -528,6 +528,8 @@ impl NtpChildProcess {
         }
 
         // Control connection dispatches.
+        // Reads imsg from the control connection and sends an appropriate
+        // IMSG_CTL_RESP response for REAL ntpctl compatibility.
         let ctl_start = listener_end;
         let mut to_remove: Vec<usize> = Vec::new();
         for (rel_idx, idx) in (ctl_start..poll_fds.len()).enumerate() {
@@ -537,12 +539,11 @@ impl NtpChildProcess {
             if poll_fds[idx].revents & (libc::POLLIN | libc::POLLERR) != 0 {
                 remaining -= 1;
                 let fd = poll_fds[idx].fd;
-                match control_dispatch_msg(fd) {
-                    Ok(Some(_)) => {
-                        // Message handled. In C, consumed > 0 means close.
-                        // For now we keep the connection open.
+                match handle_control_conn(fd, self.synced, self.status_stratum) {
+                    Ok(true) => {
+                        // Message handled — keep connection open
                     }
-                    Ok(None) => {
+                    Ok(false) => {
                         // EOF or no data — close this connection.
                         if rel_idx < self.ctl_conns.len() {
                             to_remove.push(rel_idx);

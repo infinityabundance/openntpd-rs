@@ -10,9 +10,12 @@
 //! - `completions` — Generate shell completions.
 //! - `oracle`    — Build Docker oracle VM matrix and run integration tests.
 //! - `ctl-test`  — Run ntpctl integration tests against Docker oracles.
+//! - `compat`    — Multi-version cross-compatibility test suite.
 
 // Re-export subcommand modules.
+pub mod build_musl;
 pub mod check;
+pub mod compat;
 pub mod ctl_integration;
 pub mod forensic;
 pub mod gen;

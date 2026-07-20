@@ -358,8 +358,10 @@ pub fn send_imsg_with_fd(socket: &mut UnixStream, msg: &Imsg, fd: RawFd) -> Resu
     msg_hdr.msg_iovlen = 1;
     // SAFETY: we initialized the cmsg buffer above.
     msg_hdr.msg_control = unsafe { cmsg_buf.bytes.as_mut_ptr() as *mut libc::c_void };
-    msg_hdr.msg_controllen =
-        unsafe { libc::CMSG_SPACE(std::mem::size_of::<libc::c_int>() as _) as usize }; // SAFETY: fits in usize on all supported platforms
+    // SAFETY: CMSG_SPACE returns socklen_t (u32 on musl, varies on glibc).
+    // Cast to usize for msg_controllen field.
+    let cmsg_space = unsafe { libc::CMSG_SPACE(std::mem::size_of::<libc::c_int>() as _) };
+    msg_hdr.msg_controllen = cmsg_space as usize; // SAFETY: fits in usize on all supported platforms
 
     // SAFETY: sendmsg with valid fd, iov, and control message.
     let ret = unsafe { libc::sendmsg(raw_fd, &msg_hdr, 0) };
@@ -387,7 +389,7 @@ pub fn recv_imsg_with_fd(socket: &mut UnixStream) -> Result<(Imsg, Option<RawFd>
         bytes: [u8; 64],
     }
     let mut cmsg_buf = CmsgBuf { bytes: [0u8; 64] };
-    let cmsg_len = unsafe { libc::CMSG_SPACE(std::mem::size_of::<libc::c_int>() as _) as usize };
+    unsafe { libc::CMSG_SPACE(std::mem::size_of::<libc::c_int>() as _) };
 
     // Use recvmsg to potentially receive ancillary data (SCM_RIGHTS fd).
     let mut iov = libc::iovec {
@@ -400,7 +402,7 @@ pub fn recv_imsg_with_fd(socket: &mut UnixStream) -> Result<(Imsg, Option<RawFd>
     msg_hdr.msg_iovlen = 1;
     // SAFETY: cmsg_buf is initialized (zeroed).
     msg_hdr.msg_control = unsafe { cmsg_buf.bytes.as_mut_ptr() as *mut libc::c_void };
-    msg_hdr.msg_controllen = cmsg_len;
+    msg_hdr.msg_controllen = 64;
 
     // SAFETY: recvmsg with valid fd and initialized msghdr.
     let mut total_read: usize = loop {

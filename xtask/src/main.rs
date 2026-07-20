@@ -19,6 +19,8 @@ fn main() -> ExitCode {
         eprintln!("  completions   Generate shell completions");
         eprintln!("  oracle        Build Docker oracle VM matrix and run all checks");
         eprintln!("  ctl-test      Run ntpctl integration tests against Docker oracles");
+        eprintln!("  build-musl    Cross-compile musl binaries");
+        eprintln!("  compat        Multi-version cross-compatibility test suite");
         return ExitCode::FAILURE;
     }
 
@@ -65,6 +67,18 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             }
         }
+        "build-musl" => {
+            if let Err(e) = xtask::build_musl::run(&args[2..]) {
+                eprintln!("build-musl failed: {e}");
+                return ExitCode::FAILURE;
+            }
+        }
+        "compat" => {
+            if let Err(e) = xtask::compat::run(&args[2..]) {
+                eprintln!("compat failed: {e}");
+                return ExitCode::FAILURE;
+            }
+        }
         "help" | "--help" | "-h" => {
             eprintln!("Usage: cargo xtask <command>");
             eprintln!();
@@ -77,6 +91,8 @@ fn main() -> ExitCode {
             eprintln!("  completions   Generate shell completions");
             eprintln!("  oracle        Build Docker oracle VM matrix and run all checks");
             eprintln!("  ctl-test      Run ntpctl integration tests against Docker oracles");
+            eprintln!("  build-musl    Cross-compile musl binaries");
+            eprintln!("  compat        Multi-version cross-compatibility test suite");
             return ExitCode::SUCCESS;
         }
         other => {

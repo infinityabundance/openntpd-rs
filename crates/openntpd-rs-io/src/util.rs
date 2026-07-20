@@ -84,7 +84,7 @@ pub fn d_to_tv(d: f64) -> Option<libc::timeval> {
     }
     Some(libc::timeval {
         tv_sec: secs,
-        tv_usec: usec as libc::suseconds_t,
+        tv_usec: usec as i64,
     })
 }
 

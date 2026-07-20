@@ -7,10 +7,11 @@
 //! socket: check availability, create, bind, listen, accept, dispatch
 //! messages, close connections, and shut down.
 
-use openntpd_rs_core::control::CTL_REQ_ALL;
-use openntpd_rs_core::control::CTL_REQ_PEERS;
-use openntpd_rs_core::control::CTL_REQ_SENSORS;
-use openntpd_rs_core::control::CTL_REQ_STATUS;
+use openntpd_rs_core::control::{
+    ControlRequest, ControlResponse, CTL_REQ_ALL, CTL_REQ_PEERS, CTL_REQ_SENSORS, CTL_REQ_STATUS,
+};
+
+use crate::imsg::{Imsg, ImsgHeader, IMSG_CTL_REQ, IMSG_CTL_RESP};
 
 /// Backlog for `listen()` on the control socket.
 pub const CONTROL_BACKLOG: i32 = 5;
@@ -311,6 +312,163 @@ pub fn build_show_status() -> String {
     // In the simplified Rust model, we report a stub status.
     // A full implementation would iterate over the peer/sensor lists.
     format!("status: synced={} stratum={}", 0, 0)
+}
+
+/// Receive an imsg from a raw file descriptor (non-blocking).
+///
+/// Returns `Ok(None)` on EWOULDBLOCK/EAGAIN or EOF.
+pub fn control_recv_imsg(fd: i32) -> Result<Option<Imsg>, String> {
+    // Read the 12-byte imsg header.
+    let mut hdr_buf = [0u8; 12];
+    let mut offset = 0usize;
+    while offset < 12 {
+        let n = unsafe {
+            libc::read(
+                fd,
+                hdr_buf.as_mut_ptr().add(offset) as *mut libc::c_void,
+                12 - offset,
+            )
+        };
+        if n < 0 {
+            let err = std::io::Error::last_os_error();
+            if err.kind() == std::io::ErrorKind::WouldBlock {
+                return if offset == 0 {
+                    Ok(None)
+                } else {
+                    Err(format!("partial imsg header read"))
+                };
+            }
+            return Err(format!("control_recv_imsg: read: {err}"));
+        }
+        if n == 0 {
+            return if offset == 0 {
+                Ok(None)
+            } else {
+                Err("control_recv_imsg: unexpected EOF".into())
+            };
+        }
+        offset += n as usize;
+    }
+
+    let header = ImsgHeader::from_bytes(&hdr_buf);
+    if let Err(e) = header.validate() {
+        return Err(format!("control_recv_imsg: invalid header: {e}"));
+    }
+
+    let payload_len = header.length as usize;
+    let mut payload = vec![0u8; payload_len];
+    offset = 0;
+    while offset < payload_len {
+        let n = unsafe {
+            libc::read(
+                fd,
+                payload.as_mut_ptr().add(offset) as *mut libc::c_void,
+                payload_len - offset,
+            )
+        };
+        if n < 0 {
+            return Err(format!(
+                "control_recv_imsg: payload read: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        if n == 0 {
+            return Err("control_recv_imsg: unexpected EOF (payload)".into());
+        }
+        offset += n as usize;
+    }
+
+    Ok(Some(Imsg { header, payload }))
+}
+
+/// Send an imsg over a raw file descriptor.
+pub fn control_send_imsg(fd: i32, msg: &Imsg) -> Result<(), String> {
+    let bytes = msg.to_bytes();
+    let mut offset = 0usize;
+    while offset < bytes.len() {
+        let n = unsafe {
+            libc::write(
+                fd,
+                bytes.as_ptr().add(offset) as *const libc::c_void,
+                bytes.len() - offset,
+            )
+        };
+        if n < 0 {
+            return Err(format!(
+                "control_send_imsg: write: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        offset += n as usize;
+    }
+    Ok(())
+}
+
+/// Handle a single control connection: read imsg request, send response.
+///
+/// Returns `Ok(true)` if a message was handled, `Ok(false)` if no data
+/// (WouldBlock / EOF), and `Err` on protocol errors.
+pub fn handle_control_conn(fd: i32, synced: bool, stratum: u8) -> Result<bool, String> {
+    let imsg = match control_recv_imsg(fd)? {
+        Some(m) => m,
+        None => return Ok(false),
+    };
+
+    if imsg.header.type_ != IMSG_CTL_REQ {
+        return Err(format!(
+            "handle_control_conn: expected IMSG_CTL_REQ, got {}",
+            imsg.header.type_
+        ));
+    }
+
+    let req_type = ControlRequest::decode(&imsg.payload).unwrap_or(0);
+
+    let resp = match req_type {
+        CTL_REQ_STATUS | CTL_REQ_ALL => build_control_response(req_type, synced, stratum),
+        CTL_REQ_PEERS => {
+            // Build empty peers response
+            let info = ControlResponse::new_peers(&[]);
+            info
+        }
+        CTL_REQ_SENSORS => {
+            // Build empty sensors response
+            let info = ControlResponse::new_sensors(&[]);
+            info
+        }
+        _ => {
+            return Err(format!(
+                "handle_control_conn: unknown request type {req_type}"
+            ));
+        }
+    };
+
+    let encoded = resp.encode();
+    let resp_imsg = Imsg::new(IMSG_CTL_RESP, encoded);
+    control_send_imsg(fd, &resp_imsg)?;
+
+    Ok(true)
+}
+
+/// Build a [`ControlResponse`] for the given request type.
+fn build_control_response(type_: u32, synced: bool, stratum: u8) -> ControlResponse {
+    use openntpd_rs_core::control::{NtpdStatus, SyncState};
+
+    let sync_state = if synced {
+        SyncState::Synced
+    } else {
+        SyncState::Unsynchronized
+    };
+    let status = NtpdStatus {
+        sync_state,
+        stratum,
+        offset: 0.0,
+        frequency: 0.0,
+        uptime: 0,
+    };
+    match type_ {
+        CTL_REQ_ALL => ControlResponse::new_all(&status, &[], &[]),
+        _ => ControlResponse::new_status(&status),
+    }
 }
 
 #[cfg(test)]
