@@ -282,6 +282,18 @@ pub fn control_dispatch_msg(fd: i32) -> Result<Option<CtlRequest>, String> {
 ///
 /// Corresponds to C: `session_socket_nonblockmode()`.
 pub fn set_nonblock(fd: i32) -> Result<(), String> {
+    set_session_nonblock(fd)
+}
+
+/// Alias for [`set_nonblock`] matching the C function name exactly.
+///
+/// Corresponds to C: `session_socket_nonblockmode()`.
+pub fn session_socket_nonblockmode(fd: i32) -> Result<(), String> {
+    set_nonblock(fd)
+}
+
+/// Internal implementation of socket non-block mode.
+pub fn set_session_nonblock(fd: i32) -> Result<(), String> {
     let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
     if flags == -1 {
         return Err(format!(

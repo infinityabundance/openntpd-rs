@@ -771,6 +771,7 @@ fn generate_port_parity(docs_gen: &Path) -> anyhow::Result<()> {
     );
     md.push_str("| C source | Rust module | Status | Tests |\n|----------|-------------|--------|-------|\n");
     let total: usize = surfaces().iter().map(|s| s.tests.len()).sum();
+    let dynamic_total = actual_test_count();
     for s in surfaces() {
         let n = if s.tests.is_empty() {
             "—".into()
@@ -784,7 +785,7 @@ fn generate_port_parity(docs_gen: &Path) -> anyhow::Result<()> {
     }
     md.push('\n');
     md.push_str(&format!(
-        "**Total project tests: {total} (+ 3 xtask harness)**\n\n"
+        "**Total surface tests: {total} (+ 3 xtask harness) — actual workspace tests: ~{dynamic_total}**\n\n"
     ));
     md.push_str("## Status definitions\n\n");
     md.push_str("- **Implemented — internally tested**: Rust code exists, unit tests pass, but no oracle comparison has been run.\n");
@@ -794,6 +795,47 @@ fn generate_port_parity(docs_gen: &Path) -> anyhow::Result<()> {
     md.push_str("\n**No surface is labelled `Ported` until `cargo xtask parity` produces a verified evidence artifact against the real OpenNTPD 7.9p1 oracle.**\n\n");
     std::fs::write(docs_gen.join("port-parity.md"), &md)?;
     Ok(())
+}
+
+fn count_tests_in_dir(dir: &Path) -> usize {
+    let mut count = 0usize;
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir()
+                && !path
+                    .file_name()
+                    .map_or(false, |n| n == "target" || n == ".git")
+            {
+                count += count_tests_in_dir(&path);
+            } else if path.extension().map_or(false, |e| e == "rs") {
+                if let Ok(content) = std::fs::read_to_string(&path) {
+                    count += content.matches("#[test]").count();
+                }
+            }
+        }
+    }
+    count
+}
+
+fn actual_test_count() -> usize {
+    let ws = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .join("crates");
+    let xtask = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut count = 0usize;
+    if let Ok(entries) = std::fs::read_dir(&ws) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                count += count_tests_in_dir(&path);
+            }
+        }
+    }
+    // Also count xtask harness tests
+    count += count_tests_in_dir(xtask);
+    count
 }
 
 fn generate_negative_capabilities(docs_gen: &Path) -> anyhow::Result<()> {

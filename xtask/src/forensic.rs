@@ -570,6 +570,8 @@ pub fn run() -> anyhow::Result<()> {
         ("probe_root", "probe_root"),
         ("probe_root_ns", "probe_root"),
         ("sighdlr_dns", "dns_sighdlr"),
+        // client.c auto-compare
+        ("auto_cmp", "auto_cmp"),
         // util.c
         ("lfp_to_d", "lfp_to_d"),
         ("d_to_lfp", "d_to_lfp"),
@@ -579,11 +581,14 @@ pub fn run() -> anyhow::Result<()> {
         ("getmonotime", "getmonotime"),
         ("gettime", "gettime"),
         ("getoffset", "getoffset"),
-        ("gettime_corrected", "gettime"),
-        ("gettime_from_timeval", "gettime"),
+        ("gettime_corrected", "gettime_corrected"),
+        ("gettime_from_timeval", "gettime_from_timeval"),
         ("log_sockaddr", "log_sockaddr"),
         ("print_rtable", "print_rtable"),
         ("sanitize_argv", "sanitize_argv"),
+        ("get_progname", "get_progname"),
+        ("log_ntp_addr", "log_ntp_addr"),
+        ("vfatalc", "vfatalc"),
         ("start_child", "start_child"),
         // log.c
         ("log_init", "log_init"),

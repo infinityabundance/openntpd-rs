@@ -1269,6 +1269,21 @@ pub fn peer_flash(peer: &mut Peer, offset: f64, delay: f64, dispersion: f64) {
 /// Corresponds to C: `peer_compare()` in client.c (which wraps
 /// `offset_compare` in ntpd.h).
 #[must_use]
+/// Comparison function for auto-selection peer ordering.
+///
+/// Corresponds to C: `auto_cmp()` in client.c, used as the `qsort`
+/// comparison function for clock-selection candidate lists.
+/// Delegates to [`peer_compare`].
+#[must_use]
+pub fn auto_cmp(a: &Peer, b: &Peer) -> core::cmp::Ordering {
+    peer_compare(a, b)
+}
+
+/// Comparison function for peer ordering by offset.
+///
+/// Corresponds to C: `peer_compare()` in client.c (which wraps
+/// `offset_compare` in ntpd.h).
+#[must_use]
 pub fn peer_compare(a: &Peer, b: &Peer) -> core::cmp::Ordering {
     a.offset
         .partial_cmp(&b.offset)

@@ -1,6 +1,10 @@
-# Generated files
-docs/generated/
+# Build artifacts
 target/
+
+# Generated documentation (checked in, must stay in sync with `cargo xtask gen`)
+# docs/generated/ is NOT ignored here because the CI freshness gate
+# requires these files to be tracked and versioned.
+# Use `cargo xtask gen` to regenerate, `cargo xtask check` to verify.
 
 # Editor files
 *.swp

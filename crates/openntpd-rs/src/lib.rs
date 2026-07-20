@@ -19,5 +19,6 @@
 //! MIT OR Apache-2.0
 
 pub use openntpd_rs_core as core;
+pub use openntpd_rs_ctl as ctl;
 pub use openntpd_rs_d as daemon;
 pub use openntpd_rs_io as io;

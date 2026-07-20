@@ -268,7 +268,7 @@ impl PeerInfo {
     /// Returns `(peer, bytes_consumed)` or `None` if the slice is too
     /// short.
     #[must_use]
-    fn from_entry_bytes(bytes: &[u8]) -> Option<(Self, usize)> {
+    pub fn from_entry_bytes(bytes: &[u8]) -> Option<(Self, usize)> {
         if bytes.len() < 36 {
             return None;
         }
@@ -376,7 +376,7 @@ impl SensorInfo {
     /// Returns `(sensor, bytes_consumed)` or `None` if the slice is too
     /// short.
     #[must_use]
-    fn from_entry_bytes(bytes: &[u8]) -> Option<(Self, usize)> {
+    pub fn from_entry_bytes(bytes: &[u8]) -> Option<(Self, usize)> {
         if bytes.len() < 20 {
             return None;
         }
