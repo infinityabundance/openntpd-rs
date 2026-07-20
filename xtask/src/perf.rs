@@ -112,6 +112,21 @@ const BASE_OSES: &[(&str, &str)] = &[
     ("rocky", "rocky:9"),
 ];
 
+/// BSD targets for performance measurement via Vagrant.
+const BSD_TARGETS: &[(&str, &str, &str)] = &[
+    (
+        "freebsd-14",
+        "research/vagrant/Vagrantfile.freebsd",
+        "freebsd",
+    ),
+    (
+        "openbsd-7",
+        "research/vagrant/Vagrantfile.openbsd",
+        "openbsd",
+    ),
+    ("netbsd-10", "research/vagrant/Vagrantfile.netbsd", "netbsd"),
+];
+
 // ---------------------------------------------------------------------------
 // Result types
 // ---------------------------------------------------------------------------
@@ -329,6 +344,105 @@ fn docker_cp(container: &str, src: &Path, dest: &str) -> anyhow::Result<()> {
 fn cleanup_container(container: &str) {
     let _ = Command::new("docker")
         .args(["rm", "-f", container])
+        .output();
+}
+
+// ---------------------------------------------------------------------------
+// Vagrant helpers
+// ---------------------------------------------------------------------------
+
+/// Check if Vagrant is available.
+fn check_vagrant_available() -> bool {
+    Command::new("vagrant").arg("--version").output().is_ok()
+}
+
+/// Provision and start a Vagrant VM for the given BSD target.
+fn vagrant_up(vagrant_dir: &Path, vm_name: &str) -> anyhow::Result<()> {
+    let status = Command::new("vagrant")
+        .args(["up", vm_name])
+        .current_dir(vagrant_dir)
+        .status()?;
+    if !status.success() {
+        anyhow::bail!("vagrant up {vm_name} failed");
+    }
+    Ok(())
+}
+
+/// Run a command on a Vagrant VM and return output.
+fn vagrant_ssh(vagrant_dir: &Path, vm_name: &str, cmd: &str) -> (String, String, Option<i32>) {
+    let output = Command::new("vagrant")
+        .args(["ssh", vm_name, "-c", cmd])
+        .current_dir(vagrant_dir)
+        .output();
+    match output {
+        Ok(o) => (
+            String::from_utf8_lossy(&o.stdout).trim().to_string(),
+            String::from_utf8_lossy(&o.stderr).trim().to_string(),
+            o.status.code(),
+        ),
+        Err(e) => (String::new(), format!("vagrant ssh failed: {e}"), None),
+    }
+}
+
+/// Copy a local file into a Vagrant VM using base64 encoding (no plugin needed).
+fn vagrant_push(
+    vagrant_dir: &Path,
+    vm_name: &str,
+    local_path: &Path,
+    remote_path: &str,
+) -> anyhow::Result<()> {
+    use std::io::Read;
+    let mut f = std::fs::File::open(local_path)
+        .map_err(|e| anyhow::anyhow!("open {}: {e}", local_path.display()))?;
+    let mut buf = Vec::new();
+    f.read_to_end(&mut buf)
+        .map_err(|e| anyhow::anyhow!("read {}: {e}", local_path.display()))?;
+    let b64 = base64_encode(&buf);
+    // Write base64 to remote, decode, and set executable
+    let cmd = format!(
+        "cat > {path}.b64 << 'B64EOF'\n{b64}\nB64EOF && base64 -d < {path}.b64 > {path} && chmod +x {path} && rm {path}.b64",
+        path = remote_path
+    );
+    let (_, stderr, code) = vagrant_ssh(vagrant_dir, vm_name, &cmd);
+    if code != Some(0) {
+        anyhow::bail!(
+            "push {} to {vm_name}:{remote_path} failed: {stderr}",
+            local_path.display()
+        );
+    }
+    Ok(())
+}
+
+/// Minimal base64 encoder (avoids pulling in a crate dependency).
+fn base64_encode(data: &[u8]) -> String {
+    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::new();
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = chunk.get(1).copied().unwrap_or(0) as u32;
+        let b2 = chunk.get(2).copied().unwrap_or(0) as u32;
+        let triple = (b0 << 16) | (b1 << 8) | b2;
+        out.push(CHARS[((triple >> 18) & 0x3F) as usize] as char);
+        out.push(CHARS[((triple >> 12) & 0x3F) as usize] as char);
+        if chunk.len() > 1 {
+            out.push(CHARS[((triple >> 6) & 0x3F) as usize] as char);
+        } else {
+            out.push('=');
+        }
+        if chunk.len() > 2 {
+            out.push(CHARS[(triple & 0x3F) as usize] as char);
+        } else {
+            out.push('=');
+        }
+    }
+    out
+}
+
+/// Destroy a Vagrant VM.
+fn vagrant_destroy(vagrant_dir: &Path, vm_name: &str) {
+    let _ = Command::new("vagrant")
+        .args(["destroy", "-f", vm_name])
+        .current_dir(vagrant_dir)
         .output();
 }
 
@@ -1363,6 +1477,657 @@ fn measure_binary_size_in_container(container: &str, path: &str) -> Option<u64> 
 }
 
 // ---------------------------------------------------------------------------
+// BSD Vagrant measurement runner
+// ---------------------------------------------------------------------------
+
+/// Measure performance on a BSD Vagrant VM.
+fn measure_bsd(
+    target: &str,
+    _vagrantfile: &str,
+    vm_name: &str,
+    git_ntpd: &Path,
+    git_ntpctl: &Path,
+    all_results: &mut Vec<PerfResult>,
+) {
+    let ws = workspace_root();
+    let vagrant_dir = ws.join("research/vagrant");
+
+    // Step 1: Provision VM
+    eprintln!("  [{target}] provisioning VM...");
+    if let Err(e) = vagrant_up(&vagrant_dir, vm_name) {
+        eprintln!("  [{target}] vagrant up failed: {e}");
+        return;
+    }
+
+    // Step 2: Ensure remote directory
+    eprintln!("  [{target}] preparing remote environment...");
+    vagrant_ssh(
+        &vagrant_dir,
+        vm_name,
+        "mkdir -p /tmp/openntpd-perf /var/run /etc",
+    );
+
+    // Step 3: Copy Rust binaries to VM
+    eprintln!("  [{target}] copying Rust binaries...");
+    let remote_ntpd = "/tmp/openntpd-perf/ntpd-rust";
+    let remote_ntpctl = "/tmp/openntpd-perf/ntpctl-rust";
+    if let Err(e) = vagrant_push(&vagrant_dir, vm_name, git_ntpd, remote_ntpd) {
+        eprintln!("  [{target}] failed to push ntpd: {e}");
+        vagrant_destroy(&vagrant_dir, vm_name);
+        return;
+    }
+    if let Err(e) = vagrant_push(&vagrant_dir, vm_name, git_ntpctl, remote_ntpctl) {
+        eprintln!("  [{target}] failed to push ntpctl: {e}");
+        vagrant_destroy(&vagrant_dir, vm_name);
+        return;
+    }
+    let binary_size = std::fs::metadata(git_ntpd).map(|m| m.len()).unwrap_or(0);
+
+    // Step 4: Generate config file on VM
+    let config_path = "/etc/ntpd-perf.conf";
+    let socket_path = "/var/run/ntpd.sock";
+    let config_content = generate_100_line_config("7.9p1");
+    let escaped_config = config_content.replace('\'', "'\\''");
+    vagrant_ssh(
+        &vagrant_dir,
+        vm_name,
+        &format!("cat > {config_path} << 'PERFEOF'\n{escaped_config}\nPERFEOF"),
+    );
+
+    // Step 5: Collect BSD-specific metrics
+    // Startup time
+    eprintln!("  [{target}] measuring startup time...");
+    let (startup_ms, pid) =
+        measure_bsd_startup(&vagrant_dir, vm_name, remote_ntpd, config_path, socket_path);
+
+    if startup_ms.is_none() {
+        eprintln!("  [{target}] startup failed, skipping");
+        vagrant_destroy(&vagrant_dir, vm_name);
+        return;
+    }
+
+    // Let daemon settle
+    std::thread::sleep(Duration::from_millis(500));
+
+    // Control socket response
+    eprintln!("  [{target}] measuring control socket response...");
+    let ctl_response = measure_bsd_ctl_response(&vagrant_dir, vm_name, remote_ntpctl, socket_path);
+
+    // BSD resource metrics (RSS, FDs, threads, CPU time)
+    eprintln!("  [{target}] measuring resource metrics...");
+    let rss_kb = pid
+        .as_deref()
+        .and_then(|p| measure_bsd_rss(&vagrant_dir, vm_name, p));
+    let thread_count = pid
+        .as_deref()
+        .and_then(|p| measure_bsd_threads(&vagrant_dir, vm_name, p));
+    let open_fds = pid
+        .as_deref()
+        .map(|p| measure_bsd_open_fds(&vagrant_dir, vm_name, p))
+        .unwrap_or(0);
+    let (cpu_user, cpu_sys) = pid
+        .as_deref()
+        .map(|p| measure_bsd_cpu_time(&vagrant_dir, vm_name, p))
+        .unwrap_or((None, None));
+
+    // Throughput / latency benchmarks (standalone C programs)
+    eprintln!("  [{target}] measuring benchmarks...");
+    let socket_lat = measure_bsd_socket_latency(&vagrant_dir, vm_name);
+    let imsg_lat = measure_bsd_imsg_latency(&vagrant_dir, vm_name);
+    let drift_tp = measure_bsd_drift_throughput(&vagrant_dir, vm_name);
+    let token_tp = measure_bsd_tokenization(&vagrant_dir, vm_name, remote_ntpd);
+    let (ntp_enc, ntp_dec) = measure_bsd_ntp_throughput(&vagrant_dir, vm_name);
+    let clock_filt = measure_bsd_clock_filter(&vagrant_dir, vm_name);
+
+    // Config parse time
+    let config_parse = measure_bsd_config_parse(&vagrant_dir, vm_name, remote_ntpd, config_path);
+
+    // Kill ntpd
+    if let Some(ref p) = pid {
+        vagrant_ssh(
+            &vagrant_dir,
+            vm_name,
+            &format!("kill {p} 2>/dev/null; pkill -9 ntpd 2>/dev/null; true"),
+        );
+    }
+
+    // Binary size on remote (BSD stat syntax)
+    let remote_size = measure_bsd_binary_size(&vagrant_dir, vm_name, remote_ntpd);
+
+    // Step 6: Build result
+    let result = PerfResult {
+        os: target.to_string(),
+        openntpd_version: "7.9p1".to_string(),
+        binary_source: "git".to_string(),
+        binary_size: remote_size.unwrap_or(binary_size),
+        startup_time_ms: startup_ms.unwrap_or(0.0),
+        config_parse_time_ms: config_parse.unwrap_or(0.0),
+        ctl_response_time_ms: ctl_response.unwrap_or(0.0),
+        cpu_user_time_ms: cpu_user.unwrap_or(0.0),
+        cpu_sys_time_ms: cpu_sys.unwrap_or(0.0),
+        peak_rss_kb: rss_kb.unwrap_or(0),
+        vm_size_kb: 0,
+        peak_vm_kb: 0,
+        heap_kb: 0,
+        stack_kb: 0,
+        peak_rss_bytes: rss_kb.unwrap_or(0) * 1024,
+        private_dirty_kb: 0,
+        swap_kb: 0,
+        minor_faults: 0,
+        major_faults: 0,
+        vol_ctxt_switches: 0,
+        invol_ctxt_switches: 0,
+        thread_count: thread_count.unwrap_or(0),
+        open_fd_count: open_fds,
+        socket_create_us: socket_lat,
+        imsg_roundtrip_us: imsg_lat,
+        drift_write_throughput: drift_tp,
+        tokenization_throughput: token_tp,
+        ntp_encode_throughput: ntp_enc,
+        ntp_decode_throughput: ntp_dec,
+        clock_filter_us: clock_filt,
+    };
+
+    all_results.push(result);
+
+    // Cleanup
+    vagrant_destroy(&vagrant_dir, vm_name);
+    eprintln!("  [{target}] done\n");
+}
+
+/// Measure BSD ntpd startup time via socket polling.
+fn measure_bsd_startup(
+    vagrant_dir: &Path,
+    vm_name: &str,
+    binary: &str,
+    config_path: &str,
+    socket_path: &str,
+) -> (Option<f64>, Option<String>) {
+    // Start ntpd in debug mode in background, capture PID
+    let cmd =
+        format!("{binary} -d -f {config_path} > /tmp/openntpd-perf/startup.log 2>&1 & echo $!");
+    let (pid_out, _, _) = vagrant_ssh(vagrant_dir, vm_name, &cmd);
+    let pid = pid_out.trim().to_string();
+    if pid.is_empty() || !pid.chars().all(|c| c.is_ascii_digit()) {
+        eprintln!("      [{vm_name} startup] no valid pid returned: {pid_out:?}");
+        return (None, None);
+    }
+
+    let start = Instant::now();
+    let timeout = Duration::from_secs(15);
+    let poll_interval = Duration::from_millis(100);
+
+    loop {
+        if start.elapsed() > timeout {
+            eprintln!("      [{vm_name} startup] timeout (15s) waiting for socket");
+            vagrant_ssh(
+                vagrant_dir,
+                vm_name,
+                &format!("kill {pid} 2>/dev/null; true"),
+            );
+            return (None, None);
+        }
+
+        let (check, _, _) = vagrant_ssh(
+            vagrant_dir,
+            vm_name,
+            &format!("test -S {socket_path} && echo exists || echo notfound"),
+        );
+        if check.trim() == "exists" {
+            let elapsed = start.elapsed();
+            return (Some(elapsed.as_secs_f64() * 1000.0), Some(pid));
+        }
+
+        // Fallback: find any socket file
+        let (find_out, _, _) = vagrant_ssh(
+            vagrant_dir,
+            vm_name,
+            "find / -type s -name '*.sock' 2>/dev/null | head -1",
+        );
+        let found = find_out.trim();
+        if !found.is_empty() && !found.contains("find:") && !found.contains("No such") {
+            let elapsed = start.elapsed();
+            eprintln!("      [{vm_name} startup] found socket at {found} (expected {socket_path})");
+            return (Some(elapsed.as_secs_f64() * 1000.0), Some(pid));
+        }
+
+        // Check if process is still alive
+        let (alive, _, _) = vagrant_ssh(
+            vagrant_dir,
+            vm_name,
+            &format!("kill -0 {pid} 2>/dev/null && echo alive || echo dead"),
+        );
+        if alive.trim() != "alive" {
+            eprintln!("      [{vm_name} startup] process died before socket appeared");
+            return (None, None);
+        }
+
+        std::thread::sleep(poll_interval);
+    }
+}
+
+/// Measure control socket response on BSD.
+fn measure_bsd_ctl_response(
+    vagrant_dir: &Path,
+    vm_name: &str,
+    ctl_binary: &str,
+    socket_path: &str,
+) -> Option<f64> {
+    let start = Instant::now();
+    let (_, _, exit_code) = vagrant_ssh(
+        vagrant_dir,
+        vm_name,
+        &format!("NTPD_CONTROL_SOCKET={socket_path} {ctl_binary} -s all 2>/dev/null; true"),
+    );
+    let elapsed = start.elapsed();
+    if exit_code.is_some() {
+        Some(elapsed.as_secs_f64() * 1000.0)
+    } else {
+        eprintln!("      [{vm_name} ctl_response] no exit code");
+        None
+    }
+}
+
+/// Get RSS in KB from `ps` on BSD.
+fn measure_bsd_rss(vagrant_dir: &Path, vm_name: &str, pid: &str) -> Option<u64> {
+    // Try headerless first, fall back to parsing with header
+    let (out, _, _) = vagrant_ssh(
+        vagrant_dir,
+        vm_name,
+        &format!("ps -o rss= -p {pid} 2>/dev/null || ps -o rss -p {pid} 2>/dev/null | tail -1"),
+    );
+    let trimmed = out.trim();
+    let val: String = trimmed.chars().filter(|c| c.is_ascii_digit()).collect();
+    val.parse::<u64>().ok()
+}
+
+/// Get thread count from `ps` on BSD.
+fn measure_bsd_threads(vagrant_dir: &Path, vm_name: &str, pid: &str) -> Option<u32> {
+    let (out, _, _) = vagrant_ssh(
+        vagrant_dir,
+        vm_name,
+        &format!(
+            "ps -o nlwp= -p {pid} 2>/dev/null || ps -o thcount= -p {pid} 2>/dev/null || echo 0"
+        ),
+    );
+    let trimmed = out.trim();
+    let val: String = trimmed.chars().filter(|c| c.is_ascii_digit()).collect();
+    val.parse::<u32>().ok()
+}
+
+/// Count open file descriptors on BSD using fstat or procstat.
+fn measure_bsd_open_fds(vagrant_dir: &Path, vm_name: &str, pid: &str) -> u32 {
+    // Try procstat -f (FreeBSD), then fstat (FreeBSD/NetBSD/OpenBSD), then lsof
+    let cmds = [
+        format!("procstat -f {pid} 2>/dev/null | wc -l"),
+        format!("fstat -p {pid} 2>/dev/null | tail -n +2 | wc -l"),
+        format!("lsof -p {pid} 2>/dev/null | wc -l"),
+    ];
+    for cmd in &cmds {
+        let (out, _, _) = vagrant_ssh(vagrant_dir, vm_name, cmd);
+        let trimmed = out.trim();
+        if let Ok(n) = trimmed.parse::<u32>() {
+            if n > 0 {
+                // fstat/lsof include headers, subtract them
+                let headerless = if cmd.starts_with("fstat") && n > 1 {
+                    n.saturating_sub(1)
+                } else {
+                    n
+                };
+                return headerless;
+            }
+        }
+    }
+    0
+}
+
+/// Measure user and system CPU time on BSD via `ps`.
+fn measure_bsd_cpu_time(
+    vagrant_dir: &Path,
+    vm_name: &str,
+    pid: &str,
+) -> (Option<f64>, Option<f64>) {
+    let (out, _, _) = vagrant_ssh(
+        vagrant_dir,
+        vm_name,
+        &format!("ps -o utime=,stime= -p {pid} 2>/dev/null"),
+    );
+    let trimmed = out.trim();
+    let parts: Vec<&str> = trimmed.split_whitespace().collect();
+    if parts.len() >= 2 {
+        let utime = parse_bsd_time(parts[0]);
+        let stime = parse_bsd_time(parts[1]);
+        return (utime, stime);
+    }
+    (None, None)
+}
+
+/// Parse BSD ps time format ([[HH:]MM:]SS or HH:MM:SS) into milliseconds.
+fn parse_bsd_time(s: &str) -> Option<f64> {
+    let s = s.trim();
+    if s.is_empty() || s == "-" {
+        return Some(0.0);
+    }
+    let parts: Vec<&str> = s.split(':').collect();
+    match parts.len() {
+        1 => {
+            // Seconds only
+            parts[0].parse::<f64>().ok().map(|v| v * 1000.0)
+        }
+        2 => {
+            // MM:SS
+            let m = parts[0].parse::<f64>().ok()?;
+            let sec = parts[1].parse::<f64>().ok()?;
+            Some((m * 60.0 + sec) * 1000.0)
+        }
+        3 => {
+            // HH:MM:SS
+            let h = parts[0].parse::<f64>().ok()?;
+            let m = parts[1].parse::<f64>().ok()?;
+            let sec = parts[2].parse::<f64>().ok()?;
+            Some((h * 3600.0 + m * 60.0 + sec) * 1000.0)
+        }
+        _ => s.parse::<f64>().ok().map(|v| v * 1000.0),
+    }
+}
+
+/// Measure config parse time on BSD.
+fn measure_bsd_config_parse(
+    vagrant_dir: &Path,
+    vm_name: &str,
+    binary: &str,
+    config_path: &str,
+) -> Option<f64> {
+    let cmd = format!(
+        "start=$(date +%s%N); {binary} -n -f {config_path} >/dev/null 2>&1; \
+         rc=$?; end=$(date +%s%N); echo $(( (end - start) / 1000000 )); exit $rc"
+    );
+    let (stdout, stderr, code) = vagrant_ssh(vagrant_dir, vm_name, &cmd);
+    if let Ok(ms) = stdout.trim().parse::<f64>() {
+        return Some(ms);
+    }
+    eprintln!("      [{vm_name} config_parse] could not parse (exit={code:?}): out={stdout:?} err={stderr:?}");
+    None
+}
+
+/// Measure binary size on BSD using `stat -f%z` (BSD syntax).
+fn measure_bsd_binary_size(vagrant_dir: &Path, vm_name: &str, path: &str) -> Option<u64> {
+    let (out, _, _) = vagrant_ssh(
+        vagrant_dir,
+        vm_name,
+        &format!("stat -f%z {path} 2>/dev/null || stat -c%s {path} 2>/dev/null || echo 0"),
+    );
+    let trimmed = out.trim();
+    let val: String = trimmed.chars().filter(|c| c.is_ascii_digit()).collect();
+    val.parse::<u64>().ok()
+}
+
+// -------------------------------------------------------------------------
+// BSD C-based benchmark helpers (same test logic as Docker, compiled on VM)
+// -------------------------------------------------------------------------
+
+/// Measure socket creation+bind latency on BSD.
+fn measure_bsd_socket_latency(vagrant_dir: &Path, vm_name: &str) -> f64 {
+    let src = r#"
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <time.h>
+#include <stdio.h>
+#include <unistd.h>
+#include <string.h>
+int main() {
+    struct timespec t1, t2;
+    int iterations = 100;
+    double total = 0.0;
+    for (int i = 0; i < iterations; i++) {
+        int fd = socket(AF_UNIX, SOCK_DGRAM, 0);
+        if (fd < 0) { perror("socket"); return 1; }
+        struct sockaddr_un addr;
+        memset(&addr, 0, sizeof(addr));
+        addr.sun_family = AF_UNIX;
+        snprintf(addr.sun_path, sizeof(addr.sun_path), "/tmp/perf-sock-%d-%d", getpid(), i);
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        if (bind(fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) { perror("bind"); close(fd); return 1; }
+        clock_gettime(CLOCK_MONOTONIC, &t2);
+        close(fd);
+        unlink(addr.sun_path);
+        double elapsed = (t2.tv_sec - t1.tv_sec) * 1e6 + (t2.tv_nsec - t1.tv_nsec) / 1e3;
+        total += elapsed;
+    }
+    printf("%.0f\n", total / iterations);
+    return 0;
+}
+"#;
+    let escaped_src = src.replace('\'', "'\\''");
+    let cmd = format!(
+        "cat > /tmp/perf-sock-lat.c << 'PERFEOF'\n{escaped_src}\nPERFEOF && \
+         cc -O2 -o /tmp/perf-sock-lat /tmp/perf-sock-lat.c 2>/dev/null && \
+         /tmp/perf-sock-lat 2>/dev/null || echo 0"
+    );
+    let (out, _, _) = vagrant_ssh(vagrant_dir, vm_name, &cmd);
+    out.trim().parse::<f64>().unwrap_or(0.0)
+}
+
+/// Measure IMSG round-trip time on BSD.
+fn measure_bsd_imsg_latency(vagrant_dir: &Path, vm_name: &str) -> f64 {
+    let src = r#"
+#include <sys/socket.h>
+#include <sys/uio.h>
+#include <string.h>
+#include <stdio.h>
+#include <unistd.h>
+#include <stdlib.h>
+#include <time.h>
+int main() {
+    int sv[2];
+    if (socketpair(AF_UNIX, SOCK_DGRAM, 0, sv) < 0) { perror("socketpair"); return 1; }
+    struct timespec t1, t2;
+    int iterations = 1000;
+    double total = 0.0;
+    char buf[256];
+    memset(buf, 'x', sizeof(buf));
+    for (int i = 0; i < iterations; i++) {
+        struct iovec iov = { .iov_base = buf, .iov_len = sizeof(buf) };
+        struct msghdr msg = { .msg_iov = &iov, .msg_iovlen = 1 };
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        if (sendmsg(sv[0], &msg, 0) < 0) { perror("sendmsg"); close(sv[0]); close(sv[1]); return 1; }
+        clock_gettime(CLOCK_MONOTONIC, &t2);
+        total += (t2.tv_sec - t1.tv_sec) * 1e6 + (t2.tv_nsec - t1.tv_nsec) / 1e3;
+    }
+    close(sv[0]); close(sv[1]);
+    printf("%.0f\n", total / iterations);
+    return 0;
+}
+"#;
+    let escaped_src = src.replace('\'', "'\\''");
+    let cmd = format!(
+        "cat > /tmp/perf-imsg-lat.c << 'PERFEOF'\n{escaped_src}\nPERFEOF && \
+         cc -O2 -o /tmp/perf-imsg-lat /tmp/perf-imsg-lat.c 2>/dev/null && \
+         /tmp/perf-imsg-lat 2>/dev/null || echo 0"
+    );
+    let (out, _, _) = vagrant_ssh(vagrant_dir, vm_name, &cmd);
+    out.trim().parse::<f64>().unwrap_or(0.0)
+}
+
+/// Measure drift file write throughput on BSD.
+fn measure_bsd_drift_throughput(vagrant_dir: &Path, vm_name: &str) -> f64 {
+    let setup = "dd if=/dev/urandom of=/tmp/perf-drift bs=1024 count=1024 2>/dev/null";
+    vagrant_ssh(vagrant_dir, vm_name, setup);
+    let cmd = format!(
+        "start=$(date +%s%N); cp /tmp/perf-drift /tmp/perf-drift-out 2>/dev/null; \
+         end=$(date +%s%N); elapsed_us=$(( (end - start) / 1000 )); \
+         echo $(( (1048576 * 1000) / (elapsed_us == 0 ? 1 : elapsed_us) ))"
+    );
+    let (out, _, _) = vagrant_ssh(vagrant_dir, vm_name, &cmd);
+    out.trim().parse::<f64>().unwrap_or(0.0)
+}
+
+/// Measure config tokenization throughput on BSD.
+fn measure_bsd_tokenization(vagrant_dir: &Path, vm_name: &str, binary: &str) -> f64 {
+    let config_size = 5000;
+    let gen_cmd = format!(
+        "for i in $(seq 1 {config_size}); do echo 'server 192.0.2.1' >> /tmp/perf-big.conf; done; \
+         wc -c < /tmp/perf-big.conf"
+    );
+    let (size_out, _, _) = vagrant_ssh(vagrant_dir, vm_name, &gen_cmd);
+    let bytes = size_out.trim().parse::<u64>().unwrap_or(0);
+    let cmd = format!(
+        "start=$(date +%s%N); {binary} -n -f /tmp/perf-big.conf >/dev/null 2>&1; \
+         end=$(date +%s%N); elapsed_ms=$(( (end - start) / 1000000 )); \
+         if [ \"$elapsed_ms\" -gt 0 ]; then \
+           echo $(( {bytes} / 1024 / elapsed_ms * 1000 )); \
+         else echo 0; fi"
+    );
+    let (out, _, _) = vagrant_ssh(vagrant_dir, vm_name, &cmd);
+    out.trim().parse::<f64>().unwrap_or(0.0)
+}
+
+/// Measure NTP packet encode/decode throughput on BSD.
+fn measure_bsd_ntp_throughput(vagrant_dir: &Path, vm_name: &str) -> (f64, f64) {
+    let src = r#"
+#include <stdint.h>
+#include <string.h>
+#include <stdio.h>
+#include <time.h>
+#pragma pack(push, 1)
+typedef struct {
+    uint8_t  li_vn_mode;
+    uint8_t  stratum;
+    uint8_t  poll;
+    uint8_t  precision;
+    uint32_t root_delay;
+    uint32_t root_dispersion;
+    uint32_t ref_id;
+    uint32_t ref_ts_sec;
+    uint32_t ref_ts_frac;
+    uint32_t orig_ts_sec;
+    uint32_t orig_ts_frac;
+    uint32_t recv_ts_sec;
+    uint32_t recv_ts_frac;
+    uint32_t tx_ts_sec;
+    uint32_t tx_ts_frac;
+} ntp_packet;
+#pragma pack(pop)
+int main() {
+    ntp_packet pkt;
+    memset(&pkt, 0, sizeof(pkt));
+    struct timespec t1, t2;
+    int iterations = 100000;
+    double total_encode = 0.0, total_decode = 0.0;
+    for (int i = 0; i < iterations; i++) {
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        pkt.li_vn_mode = 0x23;
+        pkt.stratum = 3;
+        pkt.ref_id = 0x7f000001;
+        pkt.tx_ts_sec = 1234567890;
+        pkt.tx_ts_frac = 0;
+        clock_gettime(CLOCK_MONOTONIC, &t2);
+        double enc = (t2.tv_sec - t1.tv_sec) * 1e9 + (t2.tv_nsec - t1.tv_nsec);
+        total_encode += enc;
+
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        uint8_t mode = pkt.li_vn_mode & 0x07;
+        uint8_t stratum = pkt.stratum;
+        uint32_t ref = pkt.ref_id;
+        uint32_t txsec = pkt.tx_ts_sec;
+        (void)mode; (void)stratum; (void)ref; (void)txsec;
+        clock_gettime(CLOCK_MONOTONIC, &t2);
+        double dec = (t2.tv_sec - t1.tv_sec) * 1e9 + (t2.tv_nsec - t1.tv_nsec);
+        total_decode += dec;
+    }
+    double avg_enc_ns = total_encode / iterations;
+    double avg_dec_ns = total_decode / iterations;
+    printf("%.0f %.0f\n", 1e9 / avg_enc_ns, 1e9 / avg_dec_ns);
+    return 0;
+}
+"#;
+    let escaped_src = src.replace('\'', "'\\''");
+    let cmd = format!(
+        "cat > /tmp/perf-ntp.c << 'PERFEOF'\n{escaped_src}\nPERFEOF && \
+         cc -O2 -o /tmp/perf-ntp /tmp/perf-ntp.c 2>/dev/null && \
+         /tmp/perf-ntp 2>/dev/null || echo \"0 0\""
+    );
+    let (out, _, _) = vagrant_ssh(vagrant_dir, vm_name, &cmd);
+    let parts: Vec<&str> = out.trim().split_whitespace().collect();
+    if parts.len() >= 2 {
+        let enc = parts[0].parse::<f64>().unwrap_or(0.0);
+        let dec = parts[1].parse::<f64>().unwrap_or(0.0);
+        (enc, dec)
+    } else {
+        (0.0, 0.0)
+    }
+}
+
+/// Measure clock filter computation time (8-sample) on BSD.
+fn measure_bsd_clock_filter(vagrant_dir: &Path, vm_name: &str) -> f64 {
+    let src = r#"
+#include <stdint.h>
+#include <stdio.h>
+#include <time.h>
+#include <string.h>
+#include <stdlib.h>
+typedef struct {
+    double offset;
+    double delay;
+    double dispersion;
+    uint32_t epoch;
+} sample;
+int main() {
+    sample samples[8];
+    srand(time(NULL));
+    for (int i = 0; i < 8; i++) {
+        samples[i].offset = (double)(rand() % 10000) / 1000.0;
+        samples[i].delay = (double)(rand() % 1000) / 10.0 + 1.0;
+        samples[i].dispersion = (double)(rand() % 100) / 10.0;
+        samples[i].epoch = 1234567890 + i * 64;
+    }
+    struct timespec t1, t2;
+    int iterations = 100000;
+    double total = 0.0;
+    for (int iter = 0; iter < iterations; iter++) {
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        int best = 0;
+        for (int i = 1; i < 8; i++) {
+            if (samples[i].delay < samples[best].delay ||
+                (samples[i].delay == samples[best].delay &&
+                 samples[i].dispersion < samples[best].dispersion)) {
+                best = i;
+            }
+        }
+        double total_w = 0.0, w_offset = 0.0, w_delay = 0.0;
+        for (int i = 0; i < 8; i++) {
+            double w = 1.0 / (samples[i].delay + samples[i].dispersion + 0.001);
+            total_w += w;
+            w_offset += samples[i].offset * w;
+            w_delay += samples[i].delay * w;
+        }
+        if (total_w > 0.0) {
+            w_offset /= total_w;
+            w_delay /= total_w;
+        }
+        (void)best; (void)w_offset; (void)w_delay;
+        clock_gettime(CLOCK_MONOTONIC, &t2);
+        double elapsed = (t2.tv_sec - t1.tv_sec) * 1e6 + (t2.tv_nsec - t1.tv_nsec) / 1e3;
+        total += elapsed;
+        sample tmp = samples[0];
+        memmove(&samples[0], &samples[1], 7 * sizeof(sample));
+        samples[7] = tmp;
+    }
+    printf("%.3f\n", total / iterations);
+    return 0;
+}
+"#;
+    let escaped_src = src.replace('\'', "'\\''");
+    let cmd = format!(
+        "cat > /tmp/perf-clock-filter.c << 'PERFEOF'\n{escaped_src}\nPERFEOF && \
+         cc -O2 -o /tmp/perf-clock-filter /tmp/perf-clock-filter.c 2>/dev/null && \
+         /tmp/perf-clock-filter 2>/dev/null || echo 0"
+    );
+    let (out, _, _) = vagrant_ssh(vagrant_dir, vm_name, &cmd);
+    out.trim().parse::<f64>().unwrap_or(0.0)
+}
+
+// ---------------------------------------------------------------------------
 // Results output
 // ---------------------------------------------------------------------------
 
@@ -1804,6 +2569,28 @@ pub fn run() -> anyhow::Result<()> {
         }
     }
     eprintln!();
+
+    // ---- BSD Vagrant measurements ----
+    if check_vagrant_available() {
+        eprintln!("── BSD Vagrant Performance Measurements ──");
+        let (git_ntpd, git_ntpctl) = build_rust_from_git()?;
+        for (target, _vagrantfile, vm_name) in BSD_TARGETS {
+            measure_bsd(
+                target,
+                _vagrantfile,
+                vm_name,
+                &git_ntpd,
+                &git_ntpctl,
+                &mut all_results,
+            );
+        }
+        eprintln!();
+    } else {
+        eprintln!(
+            "── BSD Vagrant not available. Install vagrant + vagrant-scp for BSD perf data. ──"
+        );
+        eprintln!();
+    }
 
     // ---- Step 4: Write results ----
     eprintln!("── Step 4: Write results ──");
