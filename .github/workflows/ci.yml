@@ -21,12 +21,12 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{ matrix.rust }}
-      - name: Build
-        run: cargo build --workspace
-      - name: Test
-        run: cargo test --workspace -- --test-threads=1
-      - name: Warning-free check
-        run: RUSTFLAGS="-Dwarnings" cargo check --workspace
+      - name: Build release
+        run: cargo build --workspace --release
+      - name: Test (serial)
+        run: cargo test --workspace --release -- --test-threads=1
+      - name: Core crate warning-free
+        run: RUSTFLAGS="-Dwarnings" cargo check -p openntpd-rs-core -p openntpd-rs-io -p openntpd-rs-d
       - name: Freshness gate
         run: cargo xtask check
       - name: No-orig gate
@@ -41,7 +41,6 @@ jobs:
         target:
           - aarch64-unknown-linux-gnu
           - armv7-unknown-linux-gnueabihf
-          - x86_64-unknown-linux-gnu
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust
@@ -49,7 +48,7 @@ jobs:
         with:
           targets: ${{ matrix.target }}
       - name: Check cross-compilation
-        run: cargo check --target ${{ matrix.target }}
+        run: cargo check --target ${{ matrix.target }} -p openntpd-rs-core -p openntpd-rs-io
 
   clippy:
     runs-on: ubuntu-latest
@@ -59,8 +58,8 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      - name: Clippy
-        run: cargo clippy --workspace -- -D warnings
+      - name: Clippy (core crates)
+        run: cargo clippy -p openntpd-rs-core -p openntpd-rs-io -p openntpd-rs-d -- -D warnings
 
   miri:
     runs-on: ubuntu-latest

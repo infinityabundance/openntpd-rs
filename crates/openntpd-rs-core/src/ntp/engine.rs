@@ -436,6 +436,7 @@ pub struct NtpEngine {
     pub last_action: f64,
     /// Frequency tracking (linear regression accumulator).
     freq_tracker: FrequencyTracker,
+    #[allow(dead_code)]
     /// Jitter seed for deterministic interval jitter.
     jitter_seed: u32,
     /// Whether auto-setting is still in progress.

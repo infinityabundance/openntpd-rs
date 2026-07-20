@@ -300,7 +300,7 @@ impl<'a> Parser<'a> {
             }
             let rtable_ref = &mut rtable;
             match self.try_option(Keyword::Rtable, |p| {
-                let (n, span) = p.take_number_token().ok_or_else(|| {
+                let (n, _span) = p.take_number_token().ok_or_else(|| {
                     p.emit_unexpected("number after 'rtable'");
                 })?;
                 *rtable_ref = RoutingTable::new(n);
@@ -371,7 +371,7 @@ impl<'a> Parser<'a> {
 
     fn try_server_option(&mut self, opts: &mut ServerOptions) -> OptionResult {
         match self.try_option(Keyword::Weight, |p| {
-            let (n, span) = p.take_number_token().ok_or_else(|| {
+            let (n, _span) = p.take_number_token().ok_or_else(|| {
                 p.emit_unexpected("number after 'weight'");
             })?;
             let min = Weight::MIN as i64;
@@ -379,7 +379,7 @@ impl<'a> Parser<'a> {
             if !(min..=max).contains(&n) {
                 p.error(
                     alloc::format!("weight must be {min}..={max}, got {n}"),
-                    Some(span),
+                    Some(_span),
                 );
                 return Err(());
             }
@@ -555,7 +555,7 @@ impl<'a> Parser<'a> {
         }
 
         try_sensor_kw!(Keyword::Correction, |p| {
-            let (n, span) = p.take_number_token().ok_or_else(|| {
+            let (n, _span) = p.take_number_token().ok_or_else(|| {
                 p.emit_unexpected("number after 'correction'");
             })?;
             if !(CorrectionMicros::MIN as i64..=CorrectionMicros::MAX as i64).contains(&n) {
@@ -565,7 +565,7 @@ impl<'a> Parser<'a> {
                         CorrectionMicros::MIN,
                         CorrectionMicros::MAX,
                     ),
-                    Some(span),
+                    Some(_span),
                 );
                 return Err(());
             }
@@ -596,7 +596,7 @@ impl<'a> Parser<'a> {
         });
 
         try_sensor_kw!(Keyword::Stratum, |p| {
-            let (n, span) = p.take_number_token().ok_or_else(|| {
+            let (n, _span) = p.take_number_token().ok_or_else(|| {
                 p.emit_unexpected("number after 'stratum'");
             })?;
             let min = Stratum::MIN as i64;
@@ -604,7 +604,7 @@ impl<'a> Parser<'a> {
             if !(min..=max).contains(&n) {
                 p.error(
                     alloc::format!("stratum must be {min}..={max}, got {n}"),
-                    Some(span),
+                    Some(_span),
                 );
                 return Err(());
             }
@@ -613,7 +613,7 @@ impl<'a> Parser<'a> {
         });
 
         try_sensor_kw!(Keyword::Weight, |p| {
-            let (n, span) = p.take_number_token().ok_or_else(|| {
+            let (n, _span) = p.take_number_token().ok_or_else(|| {
                 p.emit_unexpected("number after 'weight'");
             })?;
             let min = Weight::MIN as i64;
@@ -621,7 +621,7 @@ impl<'a> Parser<'a> {
             if !(min..=max).contains(&n) {
                 p.error(
                     alloc::format!("weight must be {min}..={max}, got {n}"),
-                    Some(span),
+                    Some(_span),
                 );
                 return Err(());
             }
