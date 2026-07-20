@@ -179,7 +179,7 @@ fn is_leap_year(year: i64) -> bool {
 /// Returns `None` if the date is before 1970 or the computation overflows.
 #[must_use]
 fn date_to_epoch_days(year: i64, month: u32, day: u32) -> Option<i64> {
-    if year < 1970 || month < 1 || month > 12 || day < 1 || day > 31 {
+    if year < 1970 || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
         return None;
     }
 
@@ -191,11 +191,11 @@ fn date_to_epoch_days(year: i64, month: u32, day: u32) -> Option<i64> {
 
     // Add days for complete months in the current year.
     let month_idx = (month - 1) as usize;
-    for m in 0..month_idx {
+    for (m, &days_in_month) in DAYS_IN_MONTH[..month_idx].iter().enumerate() {
         days = days.checked_add(if m == 1 && is_leap_year(year) {
             29
         } else {
-            i64::from(DAYS_IN_MONTH[m] as u32)
+            i64::from(days_in_month as u32)
         })?;
     }
 
@@ -654,7 +654,7 @@ impl Default for ConstraintManager {
 pub fn is_reasonable_date(unix_ts: i64) -> bool {
     // 2100-01-01 00:00:00 UTC in Unix seconds.
     const YEAR_2100_TS: i64 = 4_102_444_800;
-    unix_ts >= 0 && unix_ts < YEAR_2100_TS
+    (0..YEAR_2100_TS).contains(&unix_ts)
 }
 
 // ---------------------------------------------------------------------------

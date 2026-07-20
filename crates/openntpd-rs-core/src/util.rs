@@ -314,7 +314,7 @@ impl Timespec {
         // Reject values outside i64 range before truncation.
         // i64::MAX as f64 rounds to 2^63, so use an exclusive upper
         // bound to catch exactly 2^63 and above.
-        if t < -9_223_372_036_854_775_808.0 || t >= 9_223_372_036_854_775_808.0 {
+        if !(-9_223_372_036_854_775_808.0..9_223_372_036_854_775_808.0).contains(&t) {
             return None;
         }
         let truncated = libm::trunc(t);

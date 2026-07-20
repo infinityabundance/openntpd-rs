@@ -348,10 +348,7 @@ pub enum PrivsepRuntime {
 ///
 /// Returns `Err` if fork or privilege dropping fails.
 pub unsafe fn privsep_start(child_config: &PrivsepConfig) -> Result<PrivsepRuntime, String> {
-    let chroot_dir = match &child_config.chroot_dir {
-        Some(dir) => Some(Path::new(dir)),
-        None => None,
-    };
+    let chroot_dir = child_config.chroot_dir.as_ref().map(|dir| Path::new(dir));
 
     match unsafe { privsep_fork(&child_config.user, chroot_dir)? } {
         PrivsepRole::Parent {

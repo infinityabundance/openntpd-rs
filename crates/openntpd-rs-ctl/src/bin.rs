@@ -19,7 +19,7 @@ use std::process::ExitCode;
 use std::time::Duration;
 
 use openntpd_rs_core::control::{
-    self, ControlRequest, NtpdStatus, PeerInfo, SensorInfo, SyncState, CTL_REQ_ALL, CTL_REQ_PEERS,
+    ControlRequest, NtpdStatus, PeerInfo, SensorInfo, SyncState, CTL_REQ_ALL, CTL_REQ_PEERS,
     CTL_REQ_SENSORS, CTL_REQ_STATUS,
 };
 use openntpd_rs_io::imsg::{Imsg, ImsgHeader, IMSG_CTL_REQ, IMSG_CTL_RESP};

@@ -59,7 +59,7 @@ fn run_ntpctl_raw(args: &[&str]) -> (String, String, Option<i32>) {
 
 #[test]
 fn test_ntpctl_status_returns_output() {
-    let (stdout, stderr, code) = run_ntpctl("status");
+    let (_stdout, stderr, code) = run_ntpctl("status");
 
     // Without ntpd running, ntpctl should try to connect and fail gracefully
     assert!(
@@ -79,7 +79,7 @@ fn test_ntpctl_status_returns_output() {
 
 #[test]
 fn test_ntpctl_peers_returns_output() {
-    let (stdout, stderr, code) = run_ntpctl("peers");
+    let (_stdout, stderr, code) = run_ntpctl("peers");
     assert!(
         stderr.contains("cannot connect") || stderr.contains("refused"),
         "expected connection error, got: {stderr}"
@@ -93,7 +93,7 @@ fn test_ntpctl_peers_returns_output() {
 
 #[test]
 fn test_ntpctl_sensors_returns_output() {
-    let (stdout, stderr, code) = run_ntpctl("Sensors");
+    let (_stdout, stderr, code) = run_ntpctl("Sensors");
     assert!(
         stderr.contains("cannot connect") || stderr.contains("refused"),
         "expected connection error, got: {stderr}"
@@ -107,7 +107,7 @@ fn test_ntpctl_sensors_returns_output() {
 
 #[test]
 fn test_ntpctl_all_returns_output() {
-    let (stdout, stderr, code) = run_ntpctl("all");
+    let (_stdout, stderr, code) = run_ntpctl("all");
     assert!(
         stderr.contains("cannot connect") || stderr.contains("refused"),
         "expected connection error, got: {stderr}"

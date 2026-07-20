@@ -123,8 +123,7 @@ pub fn write_pid_file(path: &Path) -> ProcessResult<()> {
     // Verify we wrote what we intended
     let verify = std::fs::read_to_string(path).map_err(ProcessError::Io)?;
     if verify.trim() != pid.to_string() {
-        return Err(ProcessError::Io(std::io::Error::new(
-            std::io::ErrorKind::Other,
+        return Err(ProcessError::Io(std::io::Error::other(
             "PID file verification failed",
         )));
     }

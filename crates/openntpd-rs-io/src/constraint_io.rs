@@ -352,7 +352,7 @@ pub fn httpsdate_request(
     _retry: i32,
 ) -> Result<String, String> {
     let timeout_secs = if timeout.tv_sec > 0 {
-        timeout.tv_sec as i64
+        timeout.tv_sec
     } else {
         CONSTRAINT_TIMEOUT_SECS as i64
     };

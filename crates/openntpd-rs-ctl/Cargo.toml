@@ -8,6 +8,10 @@ description = "ntpctl control client binary for openntpd-rs"
 homepage.workspace = true
 repository.workspace = true
 
+[lib]
+name = "openntpd_rs_ctl"
+path = "src/lib.rs"
+
 [[bin]]
 name = "ntpctl"
 path = "src/bin.rs"

@@ -157,6 +157,7 @@ pub fn validate_client_request(packet: &NtpPacket) -> Result<u8, ServerError> {
 /// tick), `recv_time` is used for both the receive and transmit
 /// timestamps.
 #[must_use]
+#[allow(clippy::too_many_arguments)]
 pub fn prepare_response(
     request: &NtpPacket,
     recv_time: NtpTimestamp,
@@ -195,7 +196,7 @@ fn f64_to_short_signed(v: f64) -> NtpShortSigned {
     // Clamp to the representable range before rounding to avoid
     // overflow in the multiplication → i32 step.
     // The 16.16 signed range is approx [-32768.0, +32767.99998474].
-    let clamped = v.clamp(-32768.0, 32767.999_984_741_210_937_5);
+    let clamped = v.clamp(-32768.0, 32_767.999_984_741_21);
     let scaled = libm::round(clamped * 65_536.0) as i32;
     NtpShortSigned::new((scaled >> 16) as i16, (scaled & 0xFFFF) as u16)
 }
@@ -204,7 +205,7 @@ fn f64_to_short_signed(v: f64) -> NtpShortSigned {
 /// unsigned fixed-point, used for root dispersion).
 fn f64_to_short_unsigned(v: f64) -> NtpShortUnsigned {
     // Clamp to the representable range: [0.0, 65535.99998474].
-    let clamped = v.clamp(0.0, 65_535.999_984_741_210_937_5);
+    let clamped = v.clamp(0.0, 65_535.999_984_741_21);
     let scaled = libm::round(clamped * 65_536.0) as u32;
     NtpShortUnsigned::new((scaled >> 16) as u16, (scaled & 0xFFFF) as u16)
 }

@@ -563,7 +563,7 @@ impl ClockSelection {
         // A peer is a truechimer if its interval covers the best
         // midpoint.  We require at least floor((n+1)/2) intervals
         // to agree (majority intersection).
-        let threshold = (intervals.len() + 1) / 2;
+        let threshold = intervals.len().div_ceil(2);
 
         if max_tally < threshold {
             // No majority — keep all peers (the caller's selection
@@ -1247,7 +1247,7 @@ pub fn peer_flash(peer: &mut Peer, offset: f64, delay: f64, dispersion: f64) {
         peer.set_flash(PFLASH_PEERBADSTRAT);
     }
 
-    if delay > MAX_DELAY || delay < 0.0 {
+    if !(0.0..=MAX_DELAY).contains(&delay) {
         peer.set_flash(PFLASH_PEERDELAY);
     }
 
@@ -1255,7 +1255,7 @@ pub fn peer_flash(peer: &mut Peer, offset: f64, delay: f64, dispersion: f64) {
         peer.set_flash(PFLASH_PEEROFFSET);
     }
 
-    if dispersion > MAX_DISPERSION || dispersion < 0.0 {
+    if !(0.0..=MAX_DISPERSION).contains(&dispersion) {
         peer.set_flash(PFLASH_PEERDISP);
     }
 }
@@ -1269,6 +1269,12 @@ pub fn peer_flash(peer: &mut Peer, offset: f64, delay: f64, dispersion: f64) {
 /// Corresponds to C: `peer_compare()` in client.c (which wraps
 /// `offset_compare` in ntpd.h).
 #[must_use]
+pub fn peer_compare(a: &Peer, b: &Peer) -> core::cmp::Ordering {
+    a.offset
+        .partial_cmp(&b.offset)
+        .unwrap_or(core::cmp::Ordering::Equal)
+}
+
 /// Comparison function for auto-selection peer ordering.
 ///
 /// Corresponds to C: `auto_cmp()` in client.c, used as the `qsort`
@@ -1277,17 +1283,6 @@ pub fn peer_flash(peer: &mut Peer, offset: f64, delay: f64, dispersion: f64) {
 #[must_use]
 pub fn auto_cmp(a: &Peer, b: &Peer) -> core::cmp::Ordering {
     peer_compare(a, b)
-}
-
-/// Comparison function for peer ordering by offset.
-///
-/// Corresponds to C: `peer_compare()` in client.c (which wraps
-/// `offset_compare` in ntpd.h).
-#[must_use]
-pub fn peer_compare(a: &Peer, b: &Peer) -> core::cmp::Ordering {
-    a.offset
-        .partial_cmp(&b.offset)
-        .unwrap_or(core::cmp::Ordering::Equal)
 }
 
 /// Update peer state from the raw reply ring buffer — the core clock
@@ -1373,7 +1368,7 @@ pub fn client_update(peer: &mut ClientPeer) -> Option<NtpFilterSample> {
 ///
 /// * `1` — Response valid, peer state updated.
 /// * `0` — Response invalid (wrong origin, bad stratum, negative delay,
-///          etc.) but not an error — peer may retry.
+///   etc.) but not an error — peer may retry.
 /// * `-1` — Fatal error (no fd, etc.).
 ///
 /// Corresponds to C: `client_dispatch()` in client.c
@@ -1392,7 +1387,7 @@ pub fn client_dispatch(
 
     // --- Version check: accept NTPv3 or NTPv4 -----------------------------
     let ver = response.version();
-    if ver < 3 || ver > 4 {
+    if !(3..=4).contains(&ver) {
         return 0;
     }
 
@@ -1466,11 +1461,9 @@ pub fn client_dispatch(
     }
 
     // --- Auto-setting / settime -------------------------------------------
-    if settime {
-        if automatic {
-            // Delegate to handle_auto.
-            let _decision = handle_auto(peer.peer.trusted, offset, peer.trustlevel);
-        }
+    if settime && automatic {
+        // Delegate to handle_auto.
+        let _decision = handle_auto(peer.peer.trusted, offset, peer.trustlevel);
     }
 
     // --- Schedule next query interval -------------------------------------
@@ -3085,7 +3078,7 @@ mod tests {
     #[test]
     fn test_ntp_offset_delay_negative_offset() {
         // Server is behind: T4-T3 > T2-T1
-        let (offset, delay, _) = ntp_offset_delay(100.0, 100.5, 101.0, 103.0);
+        let (offset, _delay, _) = ntp_offset_delay(100.0, 100.5, 101.0, 103.0);
         // offset = ((100.5-100) + (101-103)) / 2 = (0.5 + -2) / 2 = -0.75
         assert!(
             (offset - (-0.75)).abs() < 1e-12,
@@ -3115,7 +3108,7 @@ mod tests {
     #[test]
     fn test_ntp_offset_delay_negative_delay() {
         // T4 < T1 should give negative delay
-        let (offset, delay, _) = ntp_offset_delay(100.0, 101.0, 102.0, 99.0);
+        let (_offset, delay, _) = ntp_offset_delay(100.0, 101.0, 102.0, 99.0);
         assert!(
             delay < 0.0,
             "delay should be negative when T4 < T1, got {}",
@@ -3395,13 +3388,13 @@ mod tests {
 
     #[test]
     fn test_client_dispatch_valid_mode4_response() {
-        use crate::ntp::{mode, NtpTimestamp};
+        use crate::ntp::NtpTimestamp;
         let mut cp = ClientPeer::new(addr("192.0.2.1"), 1, false);
         let mut qs = crate::ntp::query::QueryState::new();
 
         // Use integer-only timestamps to avoid fractional precision issues.
         let query_ts = NtpTimestamp::new(4_000_000_000, 0);
-        qs.send_query(query_ts);
+        let _ = qs.send_query(query_ts);
 
         // Build a valid mode 4 response.
         let mut response = crate::ntp::NtpPacket::zero();
@@ -3444,7 +3437,7 @@ mod tests {
         let mut cp = ClientPeer::new(addr("192.0.2.1"), 1, false);
         let mut qs = crate::ntp::query::QueryState::new();
 
-        qs.send_query(NtpTimestamp::new(1000, 0));
+        let _ = qs.send_query(NtpTimestamp::new(1000, 0));
 
         let mut response = crate::ntp::NtpPacket::zero();
         response.set_li_vn_mode(0, 4, 4);
@@ -3466,7 +3459,7 @@ mod tests {
         let mut qs = crate::ntp::query::QueryState::new();
 
         let query_ts = NtpTimestamp::new(1000, 0);
-        qs.send_query(query_ts);
+        let _ = qs.send_query(query_ts);
 
         let mut response = crate::ntp::NtpPacket::zero();
         response.set_li_vn_mode(3, 4, 4); // LI_ALARM
@@ -3493,7 +3486,7 @@ mod tests {
         let mut qs = crate::ntp::query::QueryState::new();
 
         let query_ts = NtpTimestamp::new(1000, 0);
-        qs.send_query(query_ts);
+        let _ = qs.send_query(query_ts);
 
         let mut response = crate::ntp::NtpPacket::zero();
         response.set_li_vn_mode(0, 4, 4);
@@ -3520,7 +3513,7 @@ mod tests {
         let mut qs = crate::ntp::query::QueryState::new();
 
         let query_ts = NtpTimestamp::new(1000, 0);
-        qs.send_query(query_ts);
+        let _ = qs.send_query(query_ts);
 
         let mut response = crate::ntp::NtpPacket::zero();
         response.set_li_vn_mode(0, 4, 4);
@@ -3547,7 +3540,7 @@ mod tests {
         let mut qs = crate::ntp::query::QueryState::new();
 
         let query_ts = NtpTimestamp::new(1000, 0);
-        qs.send_query(query_ts);
+        let _ = qs.send_query(query_ts);
 
         let mut response = crate::ntp::NtpPacket::zero();
         response.set_li_vn_mode(0, 4, 4);
@@ -3569,7 +3562,7 @@ mod tests {
         let mut qs = crate::ntp::query::QueryState::new();
 
         let query_ts = NtpTimestamp::new(1000, 0);
-        qs.send_query(query_ts);
+        let _ = qs.send_query(query_ts);
 
         // Mode 3 (CLIENT) instead of 4 (SERVER)
         let mut response = crate::ntp::NtpPacket::zero();
@@ -3595,7 +3588,7 @@ mod tests {
         let mut qs = crate::ntp::query::QueryState::new();
 
         let query_ts = NtpTimestamp::new(1000, 0);
-        qs.send_query(query_ts);
+        let _ = qs.send_query(query_ts);
 
         // Version 1 (too old)
         let mut response = crate::ntp::NtpPacket::zero();
@@ -3628,7 +3621,7 @@ mod tests {
         for i in 0..8u32 {
             let base = 1000 + i * 100;
             let query_ts = NtpTimestamp::new(base, 0);
-            qs.send_query(query_ts);
+            let _ = qs.send_query(query_ts);
 
             let mut response = crate::ntp::NtpPacket::zero();
             response.set_li_vn_mode(0, 4, 4);
@@ -3655,7 +3648,7 @@ mod tests {
         let mut qs = crate::ntp::query::QueryState::new();
 
         let query_ts = NtpTimestamp::new(1000, 0);
-        qs.send_query(query_ts);
+        let _ = qs.send_query(query_ts);
         assert!(qs.outstanding);
 
         let mut response = crate::ntp::NtpPacket::zero();
@@ -3683,7 +3676,7 @@ mod tests {
         let mut qs = crate::ntp::query::QueryState::new();
 
         let query_ts = NtpTimestamp::new(1000, 0);
-        qs.send_query(query_ts);
+        let _ = qs.send_query(query_ts);
 
         let mut response = crate::ntp::NtpPacket::zero();
         response.set_li_vn_mode(0, 4, 4);
@@ -3717,7 +3710,7 @@ mod tests {
         let mut qs = crate::ntp::query::QueryState::new();
 
         let query_ts = NtpTimestamp::new(1000, 0);
-        qs.send_query(query_ts);
+        let _ = qs.send_query(query_ts);
 
         let mut response = crate::ntp::NtpPacket::zero();
         response.set_li_vn_mode(0, 4, 4);

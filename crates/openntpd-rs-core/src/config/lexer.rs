@@ -330,13 +330,8 @@ impl<'a> Lexer<'a> {
 
     fn skip_whitespace(&mut self) {
         loop {
-            loop {
-                match self.logical_peek() {
-                    Some(b' ') | Some(b'\t') => {
-                        self.logical_get();
-                    }
-                    _ => break,
-                }
+            while let Some(b' ') | Some(b'\t') = self.logical_peek() {
+                self.logical_get();
             }
             // Do NOT consume raw continuation if a delimiter is pending
             // in logical pushback — the pushed byte must be emitted as
@@ -496,7 +491,7 @@ impl<'a> Lexer<'a> {
         let first = self.logical_get();
         let start_negative = first == Some(b'-');
 
-        if !start_negative && !first.map_or(false, |b| b.is_ascii_digit()) {
+        if !start_negative && !first.is_some_and(|b| b.is_ascii_digit()) {
             self.restore_cursor(saved);
             return self.lex_unquoted(start, line);
         }

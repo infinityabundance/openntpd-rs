@@ -1,3 +1,5 @@
+#![allow(dead_code, unused_variables, unused_assignments, unused_imports)]
+
 //! # Forensic audit — Doxygen-to-Rust surface analysis
 //!
 //! Reads the Doxygen XML produced from OpenNTPD 7.9p1 C source and
@@ -7,11 +9,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-
 // ---------------------------------------------------------------------------
 // C symbol extracted from Doxygen
 // ---------------------------------------------------------------------------
-
 #[derive(Debug, Clone)]
 struct CSymbol {
     kind: String, // "function", "define", "variable", "enum"
@@ -80,7 +80,7 @@ fn parse_doxygen_xml(xml_dir: &Path) -> BTreeMap<String, CFile> {
         let mut member_def = String::new();
         let mut member_args = String::new();
         let mut collecting = String::new();
-        let mut depth = 0usize;
+        let depth = 0usize;
         let mut in_tag = false;
 
         for ch in content.chars() {

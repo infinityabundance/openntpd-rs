@@ -69,7 +69,7 @@ pub fn process_response(
 
     // Accept NTPv3 or NTPv4.
     let ver = response.version();
-    if ver < 3 || ver > NTP_VERSION {
+    if !(3..=NTP_VERSION).contains(&ver) {
         return Err(QueryError::InvalidVersion);
     }
 
@@ -129,7 +129,7 @@ pub fn process_response(
         peer.set_flash(PFLASH_PEERSTRAT);
     }
 
-    if delay > MAX_DELAY || delay < 0.0 {
+    if !(0.0..=MAX_DELAY).contains(&delay) {
         peer.set_flash(PFLASH_PEERDELAY);
     }
 

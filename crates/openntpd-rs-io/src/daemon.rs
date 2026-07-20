@@ -159,7 +159,7 @@ impl EventLoop {
             action,
         };
         self.timers.push(timer);
-        self.timers.sort_by(|a, b| a.deadline.cmp(&b.deadline));
+        self.timers.sort_by_key(|t| t.deadline);
     }
 
     /// Remove all timers matching the given action.
@@ -247,7 +247,7 @@ impl EventLoop {
         }
 
         // Re-sort kept timers (they may have new deadlines).
-        keep.sort_by(|a, b| a.deadline.cmp(&b.deadline));
+        keep.sort_by_key(|t| t.deadline);
         self.timers = keep;
 
         Ok((ready, expired))

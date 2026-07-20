@@ -86,8 +86,7 @@ fn scale_jitter_range(interval: i64) -> i64 {
 /// With random jitter of `interval / 10` (≈300).
 #[must_use]
 pub fn error_interval() -> i64 {
-    let base = INTERVAL_QUERY_PATHETIC * (QSCALE_OFF_MAX / QSCALE_OFF_MIN) as i64;
-    base
+    INTERVAL_QUERY_PATHETIC * (QSCALE_OFF_MAX / QSCALE_OFF_MIN) as i64
 }
 
 /// Scale a query interval by the current frequency scale factor.
@@ -644,20 +643,18 @@ impl NtpEngine {
         if let (Some(offset), Some(_delay), Some(stratum)) =
             (median_offset, median_delay, median_stratum)
         {
-            if self.conf.settime {
-                if !self.synced && self.auto_pending {
-                    match self.handle_auto(true, offset) {
-                        AutoResult::SetTime(offset) => {
-                            result.need_settime = Some(offset);
-                            self.auto_pending = false;
-                        }
-                        AutoResult::Abandon => {
-                            // Abandon auto-setting but continue normal sync.
-                            self.auto_pending = false;
-                        }
-                        AutoResult::Continue => {
-                            // Not yet ready.
-                        }
+            if self.conf.settime && !self.synced && self.auto_pending {
+                match self.handle_auto(true, offset) {
+                    AutoResult::SetTime(offset) => {
+                        result.need_settime = Some(offset);
+                        self.auto_pending = false;
+                    }
+                    AutoResult::Abandon => {
+                        // Abandon auto-setting but continue normal sync.
+                        self.auto_pending = false;
+                    }
+                    AutoResult::Continue => {
+                        // Not yet ready.
                     }
                 }
             }

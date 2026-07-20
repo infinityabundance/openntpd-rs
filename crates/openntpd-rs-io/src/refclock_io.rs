@@ -35,6 +35,7 @@ use openntpd_rs_core::refclock::{RefClock, RefClockType};
 const MAX_PPS_DEVICES: u8 = 8;
 
 /// Maximum number of serial devices to scan.
+#[allow(dead_code)]
 const MAX_SERIAL_DEVICES: u8 = 16;
 
 /// PPS ioctl request code for `PPS_FETCH`.
@@ -337,7 +338,7 @@ fn parse_nmea_time(sentence: &str) -> Option<f64> {
     // Get date from the sentence if available (GPRMC has date at field 9).
     let date_str = if fields
         .first()
-        .map_or(false, |&t| t == "GPRMC" || t == "GNRMC")
+        .is_some_and(|&t| t == "GPRMC" || t == "GNRMC")
     {
         fields.get(9).copied()
     } else {

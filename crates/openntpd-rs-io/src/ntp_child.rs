@@ -402,7 +402,7 @@ impl NtpChildProcess {
             1
         };
         #[cfg(test)]
-        let timeout_ms = 1u64;
+        let timeout_ms = if next_action > now { 1u64 } else { 1u64 };
 
         // Build pollfd array with PFD_* indices.
         let mut poll_fds: Vec<libc::pollfd> = Vec::new();
@@ -995,10 +995,8 @@ impl NtpChildProcess {
         for peer_state in &mut self.peer_states {
             peer_state.peer.offset -= offset_median;
             // Also adjust all filter samples.
-            for slot in &mut peer_state.peer.filter {
-                if let Some(ref mut sample) = slot {
-                    sample.offset -= offset_median;
-                }
+            for sample in peer_state.peer.filter.iter_mut().flatten() {
+                sample.offset -= offset_median;
             }
         }
 
@@ -1054,11 +1052,7 @@ impl NtpChildProcess {
 
         // Clamp to MAX_FREQUENCY_ADJUST.
         const MAX_FREQUENCY_ADJUST: f64 = 1e-4; // 100 ppm
-        if freq > MAX_FREQUENCY_ADJUST {
-            freq = MAX_FREQUENCY_ADJUST;
-        } else if freq < -MAX_FREQUENCY_ADJUST {
-            freq = -MAX_FREQUENCY_ADJUST;
-        }
+        freq = freq.clamp(-MAX_FREQUENCY_ADJUST, MAX_FREQUENCY_ADJUST);
 
         // Send IMSG_ADJFREQ to parent.
         let payload = freq.to_ne_bytes().to_vec();
@@ -1088,10 +1082,8 @@ impl NtpChildProcess {
         } else {
             // Adjust all peer filter offsets (matching C).
             for peer_state in &mut self.peer_states {
-                for slot in &mut peer_state.peer.filter {
-                    if let Some(ref mut sample) = slot {
-                        sample.offset -= offset;
-                    }
+                for sample in peer_state.peer.filter.iter_mut().flatten() {
+                    sample.offset -= offset;
                 }
             }
         }

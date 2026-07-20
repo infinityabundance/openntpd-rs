@@ -418,7 +418,7 @@ impl<'a> Parser<'a> {
         };
         if wildcard_host {
             self.error(
-                alloc::format!("wildcard '*' is not valid for constraint URL"),
+                "wildcard '*' is not valid for constraint URL",
                 Some(url_span),
             );
             self.recover_to_newline();
@@ -714,10 +714,7 @@ impl<'a> Parser<'a> {
         })?;
         let bytes = s.as_bytes().to_vec();
         if is_wildcard(&bytes) {
-            self.error(
-                alloc::format!("wildcard '*' is not valid for server address"),
-                Some(span),
-            );
+            self.error("wildcard '*' is not valid for server address", Some(span));
             self.recover_to_newline();
             return None;
         }

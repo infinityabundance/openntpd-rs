@@ -266,7 +266,7 @@ pub fn run_daemon_background(config: &DaemonConfig) -> DaemonResult {
     run_privsep_daemon(config, ctl_fd, &runtime)
 }
 
-fn config_path_display(path: &PathBuf) -> &str {
+fn config_path_display(path: &Path) -> &str {
     path.to_str().unwrap_or("<invalid path>")
 }
 
@@ -694,7 +694,7 @@ impl DaemonContext {
         let sockets = NtpIo::bind_sockets(&addrs).map_err(|e| format!("bind listeners: {e}"))?;
 
         // Register peer targets in NtpIo.
-        for (_idx, peer) in self.peers.iter().enumerate() {
+        for peer in self.peers.iter() {
             let addr_str = core::str::from_utf8(peer.address.as_bytes()).unwrap_or("0.0.0.0");
             if let Ok(ip) = addr_str.parse::<IpAddr>() {
                 let target = PeerTarget {

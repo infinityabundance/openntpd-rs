@@ -95,8 +95,9 @@ pub fn os_freq_to_openbsd(os_freq: i64) -> ClockResult<openntpd_rs_core::util::F
 /// Returns `Overflow` if the divided value exceeds i32 range.
 #[cfg(target_os = "linux")]
 pub fn openbsd_freq_to_linux(freq: openntpd_rs_core::util::Frequency) -> ClockResult<i64> {
-    freq.try_to_linux()
-        .ok_or_else(|| ClockError::Overflow("frequency out of Linux adjtimex range"))
+    freq.try_to_linux().ok_or(ClockError::Overflow(
+        "frequency out of Linux adjtimex range",
+    ))
 }
 
 /// Convert Linux `adjtimex.freq` scaled-ppm to OpenBSD internal frequency.
@@ -104,8 +105,9 @@ pub fn openbsd_freq_to_linux(freq: openntpd_rs_core::util::Frequency) -> ClockRe
 /// Returns `Overflow` if the multiplication would overflow `i64`.
 #[cfg(target_os = "linux")]
 pub fn linux_freq_to_openbsd(linux_freq: i64) -> ClockResult<openntpd_rs_core::util::Frequency> {
-    openntpd_rs_core::util::Frequency::from_linux_checked(linux_freq)
-        .ok_or_else(|| ClockError::Overflow("linux_freq_to_openbsd: multiplication overflow"))
+    openntpd_rs_core::util::Frequency::from_linux_checked(linux_freq).ok_or(ClockError::Overflow(
+        "linux_freq_to_openbsd: multiplication overflow",
+    ))
 }
 
 /// Read current kernel timex status.

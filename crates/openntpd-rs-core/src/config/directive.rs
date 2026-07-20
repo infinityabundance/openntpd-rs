@@ -321,7 +321,7 @@ pub struct RefId {
 }
 impl RefId {
     /// Create from a byte slice of length 1–4.  Returns `None` for empty,
-    /// >4 byte inputs, or inputs containing embedded NUL (the lexer rejects
+    /// more than 4 byte inputs, or inputs containing embedded NUL (the lexer rejects
     /// NUL and OpenNTPD measures with `strlen()`).
     pub fn from_bytes(src: &[u8]) -> Option<Self> {
         let len = src.len();
@@ -340,8 +340,15 @@ impl RefId {
         self.bytes
     }
     /// The number of meaningful bytes (1..=4).
+    #[must_use]
     pub fn len(self) -> u8 {
         self.len
+    }
+
+    /// Returns `true` if the refid is empty (no bytes).
+    #[must_use]
+    pub fn is_empty(self) -> bool {
+        self.len == 0
     }
 }
 impl fmt::Display for RefId {

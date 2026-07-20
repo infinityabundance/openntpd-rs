@@ -269,11 +269,7 @@ pub fn ntpd_adjtime(offset: f64) -> Result<bool, String> {
     }
 
     // Clock is synced if olddelta is zero on a non-first adjustment.
-    let synced = if !firstadj && olddelta.tv_sec == 0 && olddelta.tv_usec == 0 {
-        true
-    } else {
-        false
-    };
+    let synced = !firstadj && olddelta.tv_sec == 0 && olddelta.tv_usec == 0;
 
     FIRST_ADJ.store(false, std::sync::atomic::Ordering::Relaxed);
 

@@ -57,7 +57,7 @@ pub fn sanitize_argv(args: &mut [String]) -> usize {
         "SSH_AGENT_PID",
     ];
     for var in &sensitive_vars {
-        let _ = std::env::remove_var(var);
+        std::env::remove_var(var);
     }
 
     args.len()
@@ -77,10 +77,11 @@ pub fn gettime_corrected() -> f64 {
 /// to have `tv_sec` as seconds since the epoch and `tv_usec` as
 /// microseconds.
 pub fn gettime_from_timeval(tv: libc::timeval) -> Option<NtpTimestamp> {
-    let usec = i64::from(tv.tv_usec);
-    let nsec = usec.checked_mul(1000)?;
-    let ntp_offset = tv.tv_sec.checked_add(NTP_UNIX_EPOCH_DELTA as i64)?;
-    Some(NtpTimestamp::new(ntp_offset, nsec as u32))
+    // NTP fractional seconds: 1/2³² of a second.
+    // Convert microseconds to NTP fraction: (usec / 1_000_000) * 2³²
+    let frac = ((tv.tv_usec as u64) << 32) / 1_000_000;
+    let ntp_secs = tv.tv_sec.checked_add(NTP_UNIX_EPOCH_DELTA as i64)?;
+    Some(NtpTimestamp::new(ntp_secs as u32, frac as u32))
 }
 
 /// Format an NTP address for logging.

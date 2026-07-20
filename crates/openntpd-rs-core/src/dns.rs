@@ -69,7 +69,7 @@ impl DnsResponse {
 /// ```
 pub fn split_constraint_url(url: &str) -> (String, String) {
     let url = url.strip_prefix("https://").unwrap_or(url);
-    if let Some(pos) = url.find(|c: char| c == '/' || c == '\\') {
+    if let Some(pos) = url.find(['/', '\\']) {
         (url[..pos].into(), url[pos..].into())
     } else {
         (url.into(), "/".into())

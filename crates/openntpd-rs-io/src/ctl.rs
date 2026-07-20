@@ -347,7 +347,7 @@ pub fn control_recv_imsg(fd: i32) -> Result<Option<Imsg>, String> {
                 return if offset == 0 {
                     Ok(None)
                 } else {
-                    Err(format!("partial imsg header read"))
+                    Err("partial imsg header read".into())
                 };
             }
             return Err(format!("control_recv_imsg: read: {err}"));

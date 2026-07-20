@@ -171,7 +171,7 @@ pub fn process_sntp_response(
 
     // Accept NTPv3 or NTPv4.
     let ver = response.version();
-    if ver < 3 || ver > NTP_VERSION {
+    if !(3..=NTP_VERSION).contains(&ver) {
         return Err("SNTP: invalid version");
     }
 

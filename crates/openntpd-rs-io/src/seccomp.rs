@@ -37,6 +37,7 @@ pub mod linux {
 
     // seccomp return values
     const SECCOMP_RET_KILL_PROCESS: u32 = 0x8000_0000;
+    #[allow(dead_code)]
     const SECCOMP_RET_KILL_THREAD: u32 = 0x0000_0000;
     const SECCOMP_RET_ALLOW: u32 = 0x7FFF_0000;
 
