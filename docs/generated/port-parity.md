@@ -33,7 +33,7 @@ OpenNTPD 7.9p1 translation units and their Rust counterparts.
 | `dns.c` | `dns` | Implemented — internally tested | 26 |
 | `log.c` | `log` | Implemented — internally tested | 12 |
 
-**Total project tests: 560 (+ 3 xtask harness)**
+**Total surface tests: 560 (+ 3 xtask harness) — actual workspace tests: ~1356**
 
 ## Status definitions
 

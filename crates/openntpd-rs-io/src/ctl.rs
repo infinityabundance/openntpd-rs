@@ -44,9 +44,9 @@ pub fn control_check(path: &str) -> Result<(), String> {
     let sun_path_len = path_bytes.len().min(
         (std::mem::size_of::<libc::sockaddr_un>() - std::mem::size_of::<libc::sa_family_t>()) - 1,
     );
-    let sa_slice: &mut [i8] = &mut sa.sun_path;
+    let sa_slice: &mut [libc::c_char] = &mut sa.sun_path;
     for (i, &b) in path_bytes[..sun_path_len].iter().enumerate() {
-        sa_slice[i] = b as i8;
+        sa_slice[i] = b as libc::c_char;
     }
 
     // SAFETY: we're connecting to check if the socket is already bound.
@@ -118,9 +118,9 @@ pub fn control_init(path: &str) -> Result<i32, String> {
     let mut sa: libc::sockaddr_un = unsafe { std::mem::zeroed() };
     sa.sun_family = libc::AF_UNIX as libc::sa_family_t;
     let bytes = path_c.as_bytes();
-    let sa_slice: &mut [i8] = &mut sa.sun_path;
+    let sa_slice: &mut [libc::c_char] = &mut sa.sun_path;
     for (i, &b) in bytes.iter().enumerate() {
-        sa_slice[i] = b as i8;
+        sa_slice[i] = b as libc::c_char;
     }
 
     let old_umask = unsafe {
@@ -549,9 +549,9 @@ mod tests {
         sa.sun_family = libc::AF_UNIX as libc::sa_family_t;
         let path_c = std::ffi::CString::new(path.as_str()).unwrap();
         let bytes = path_c.as_bytes();
-        let sa_slice: &mut [i8] = &mut sa.sun_path;
+        let sa_slice: &mut [libc::c_char] = &mut sa.sun_path;
         for (i, &b) in bytes.iter().enumerate() {
-            sa_slice[i] = b as i8;
+            sa_slice[i] = b as libc::c_char;
         }
 
         let connect_ret = unsafe {
@@ -630,9 +630,9 @@ mod tests {
         sa.sun_family = libc::AF_UNIX as libc::sa_family_t;
         let path_c = std::ffi::CString::new(path.as_str()).unwrap();
         let bytes = path_c.as_bytes();
-        let sa_slice: &mut [i8] = &mut sa.sun_path;
+        let sa_slice: &mut [libc::c_char] = &mut sa.sun_path;
         for (i, &b) in bytes.iter().enumerate() {
-            sa_slice[i] = b as i8;
+            sa_slice[i] = b as libc::c_char;
         }
         unsafe {
             libc::connect(
@@ -690,9 +690,9 @@ mod tests {
         sa.sun_family = libc::AF_UNIX as libc::sa_family_t;
         let path_c = std::ffi::CString::new(path.as_str()).unwrap();
         let bytes = path_c.as_bytes();
-        let sa_slice: &mut [i8] = &mut sa.sun_path;
+        let sa_slice: &mut [libc::c_char] = &mut sa.sun_path;
         for (i, &b) in bytes.iter().enumerate() {
-            sa_slice[i] = b as i8;
+            sa_slice[i] = b as libc::c_char;
         }
         unsafe {
             libc::connect(
@@ -725,9 +725,9 @@ mod tests {
         sa.sun_family = libc::AF_UNIX as libc::sa_family_t;
         let path_c = std::ffi::CString::new(path.as_str()).unwrap();
         let bytes = path_c.as_bytes();
-        let sa_slice: &mut [i8] = &mut sa.sun_path;
+        let sa_slice: &mut [libc::c_char] = &mut sa.sun_path;
         for (i, &b) in bytes.iter().enumerate() {
-            sa_slice[i] = b as i8;
+            sa_slice[i] = b as libc::c_char;
         }
         unsafe {
             libc::connect(
@@ -775,9 +775,9 @@ mod tests {
             sa.sun_family = libc::AF_UNIX as libc::sa_family_t;
             let path_c = std::ffi::CString::new(path.as_str()).unwrap();
             let bytes = path_c.as_bytes();
-            let sa_slice: &mut [i8] = &mut sa.sun_path;
+            let sa_slice: &mut [libc::c_char] = &mut sa.sun_path;
             for (i, &b) in bytes.iter().enumerate() {
-                sa_slice[i] = b as i8;
+                sa_slice[i] = b as libc::c_char;
             }
             unsafe {
                 libc::connect(

@@ -33,8 +33,7 @@
     clippy::needless_range_loop,
     clippy::manual_range_contains,
     clippy::needless_ifs,
-    clippy::option_map_or_none,
-    clippy::unused_assignments
+    clippy::option_map_or_none
 )]
 
 pub mod clock;

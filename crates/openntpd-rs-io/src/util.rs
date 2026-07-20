@@ -80,7 +80,7 @@ pub fn gettime_from_timeval(tv: libc::timeval) -> Option<NtpTimestamp> {
     // NTP fractional seconds: 1/2³² of a second.
     // Convert microseconds to NTP fraction: (usec / 1_000_000) * 2³²
     let frac = ((tv.tv_usec as u64) << 32) / 1_000_000;
-    let ntp_secs = tv.tv_sec.checked_add(NTP_UNIX_EPOCH_DELTA as i64)?;
+    let ntp_secs = (tv.tv_sec as i64).checked_add(NTP_UNIX_EPOCH_DELTA as i64)?;
     Some(NtpTimestamp::new(ntp_secs as u32, frac as u32))
 }
 
@@ -167,8 +167,8 @@ pub fn d_to_tv(d: f64) -> Option<libc::timeval> {
         secs -= 1;
     }
     Some(libc::timeval {
-        tv_sec: secs,
-        tv_usec: usec as i64,
+        tv_sec: secs as libc::time_t,
+        tv_usec: usec as libc::suseconds_t,
     })
 }
 
@@ -339,7 +339,7 @@ pub fn vlog(priority: i32, msg: &str) {
         });
         // SAFETY: syslog with valid CString and priority.
         unsafe {
-            libc::syslog(priority, b"%s\0".as_ptr() as *const i8, cmsg.as_ptr());
+            libc::syslog(priority, b"%s\0".as_ptr() as *const libc::c_char, cmsg.as_ptr() as *const libc::c_char);
         }
     }
 }

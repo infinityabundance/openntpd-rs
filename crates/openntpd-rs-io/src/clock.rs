@@ -159,7 +159,7 @@ pub fn adjfreq(freq: openntpd_rs_core::util::Frequency) -> ClockResult<()> {
     let linux_freq = openbsd_freq_to_linux(freq)?;
     let mut tx: libc::timex = unsafe { std::mem::zeroed() };
     tx.modes = libc::ADJ_FREQUENCY;
-    tx.freq = linux_freq;
+    tx.freq = linux_freq as libc::c_long;
     // SAFETY: adjtimex is safe; timex is fully initialized.
     let ret = unsafe { libc::adjtimex(&mut tx) };
     if ret == -1 {

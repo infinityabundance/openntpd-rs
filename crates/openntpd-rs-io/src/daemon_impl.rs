@@ -359,7 +359,7 @@ fn adjfreq_set(freq: i64) -> Result<(), String> {
     let linux_freq = freq / 65_536_000;
     let mut tx: libc::timex = unsafe { std::mem::zeroed() };
     tx.modes = libc::ADJ_FREQUENCY;
-    tx.freq = linux_freq;
+    tx.freq = linux_freq as libc::c_long;
     // SAFETY: adjtimex with ADJ_FREQUENCY sets the clock frequency.
     let ret = unsafe { libc::adjtimex(&mut tx) };
     if ret == -1 {
@@ -460,7 +460,7 @@ pub fn ntpd_settime(offset: f64) -> Result<(), String> {
         // SAFETY: strftime with valid buffer and tm struct.
         let len = unsafe {
             libc::strftime(
-                buf.as_mut_ptr(),
+                buf.as_mut_ptr() as *mut libc::c_char,
                 buf.len(),
                 b"%a %b %e %H:%M:%S %Z %Y\0".as_ptr() as *const _,
                 &tm_ref,
@@ -468,7 +468,7 @@ pub fn ntpd_settime(offset: f64) -> Result<(), String> {
         };
         if len > 0 {
             // SAFETY: buf now contains a valid C string (null-terminated).
-            let time_str = unsafe { std::ffi::CStr::from_ptr(buf.as_ptr()).to_string_lossy() };
+            let time_str = unsafe { std::ffi::CStr::from_ptr(buf.as_ptr() as *const libc::c_char).to_string_lossy() };
             crate::util::log_info(&format!("set local clock to {time_str} (offset {offset}s)"));
         } else {
             crate::util::log_info(&format!("set local clock (offset {offset}s)"));

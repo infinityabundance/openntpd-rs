@@ -17,7 +17,7 @@
 //! - seccomp(2), prctl(2), BPF(4) man pages
 //! - Linux kernel `linux/seccomp.h`
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub mod linux {
     use std::io;
 
