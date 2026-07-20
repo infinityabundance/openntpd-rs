@@ -1,0 +1,122 @@
+[
+  {
+    "os": "debian",
+    "openntpd_version": "6.0p1",
+    "binary_source": "git",
+    "binary_size": 710872,
+    "startup_time_ms": 11.253387,
+    "config_parse_time_ms": 0.0,
+    "peak_rss_kb": 0,
+    "ctl_response_time_ms": 11.645605999999999,
+    "cpu_user_time_ms": 0.0,
+    "cpu_sys_time_ms": 0.0
+  },
+  {
+    "os": "ubuntu",
+    "openntpd_version": "6.0p1",
+    "binary_source": "git",
+    "binary_size": 710872,
+    "startup_time_ms": 9.088144,
+    "config_parse_time_ms": 0.0,
+    "peak_rss_kb": 0,
+    "ctl_response_time_ms": 9.903521999999999,
+    "cpu_user_time_ms": 0.0,
+    "cpu_sys_time_ms": 0.0
+  },
+  {
+    "os": "debian",
+    "openntpd_version": "6.2p3",
+    "binary_source": "git",
+    "binary_size": 710872,
+    "startup_time_ms": 15.272011000000001,
+    "config_parse_time_ms": 0.0,
+    "peak_rss_kb": 0,
+    "ctl_response_time_ms": 17.443085,
+    "cpu_user_time_ms": 0.0,
+    "cpu_sys_time_ms": 0.0
+  },
+  {
+    "os": "ubuntu",
+    "openntpd_version": "6.2p3",
+    "binary_source": "git",
+    "binary_size": 710872,
+    "startup_time_ms": 9.448503,
+    "config_parse_time_ms": 0.0,
+    "peak_rss_kb": 0,
+    "ctl_response_time_ms": 10.257219999999998,
+    "cpu_user_time_ms": 0.0,
+    "cpu_sys_time_ms": 0.0
+  },
+  {
+    "os": "debian",
+    "openntpd_version": "6.8p1",
+    "binary_source": "git",
+    "binary_size": 710872,
+    "startup_time_ms": 10.062731,
+    "config_parse_time_ms": 0.0,
+    "peak_rss_kb": 0,
+    "ctl_response_time_ms": 0.0,
+    "cpu_user_time_ms": 0.0,
+    "cpu_sys_time_ms": 0.0
+  },
+  {
+    "os": "alpine",
+    "openntpd_version": "6.8p1",
+    "binary_source": "real-6.8p1",
+    "binary_size": 129016,
+    "startup_time_ms": 10.689729999999999,
+    "config_parse_time_ms": 0.0,
+    "peak_rss_kb": 0,
+    "ctl_response_time_ms": 0.0,
+    "cpu_user_time_ms": 0.0,
+    "cpu_sys_time_ms": 0.0
+  },
+  {
+    "os": "ubuntu",
+    "openntpd_version": "6.8p1",
+    "binary_source": "git",
+    "binary_size": 710872,
+    "startup_time_ms": 9.181564,
+    "config_parse_time_ms": 0.0,
+    "peak_rss_kb": 0,
+    "ctl_response_time_ms": 0.0,
+    "cpu_user_time_ms": 0.0,
+    "cpu_sys_time_ms": 0.0
+  },
+  {
+    "os": "debian",
+    "openntpd_version": "7.9p1",
+    "binary_source": "git",
+    "binary_size": 710872,
+    "startup_time_ms": 10.019148,
+    "config_parse_time_ms": 0.0,
+    "peak_rss_kb": 0,
+    "ctl_response_time_ms": 0.0,
+    "cpu_user_time_ms": 0.0,
+    "cpu_sys_time_ms": 0.0
+  },
+  {
+    "os": "alpine",
+    "openntpd_version": "7.9p1",
+    "binary_source": "real-7.9p1",
+    "binary_size": 137144,
+    "startup_time_ms": 10.21862,
+    "config_parse_time_ms": 0.0,
+    "peak_rss_kb": 0,
+    "ctl_response_time_ms": 0.0,
+    "cpu_user_time_ms": 0.0,
+    "cpu_sys_time_ms": 0.0
+  },
+  {
+    "os": "ubuntu",
+    "openntpd_version": "7.9p1",
+    "binary_source": "git",
+    "binary_size": 710872,
+    "startup_time_ms": 9.392411999999998,
+    "config_parse_time_ms": 0.0,
+    "peak_rss_kb": 0,
+    "ctl_response_time_ms": 0.0,
+    "cpu_user_time_ms": 0.0,
+    "cpu_sys_time_ms": 0.0
+  }
+]

@@ -1,0 +1,98 @@
+[
+  {
+    "os": "debian",
+    "openntpd_version": "6.0p1",
+    "binary_source": "git",
+    "binary_size": 710872,
+    "startup_time_ms": 8.961682999999999,
+    "config_parse_time_ms": 0.0,
+    "peak_rss_kb": 0,
+    "ctl_response_time_ms": 10.294609,
+    "cpu_user_time_ms": 0.0,
+    "cpu_sys_time_ms": 0.0
+  },
+  {
+    "os": "ubuntu",
+    "openntpd_version": "6.0p1",
+    "binary_source": "git",
+    "binary_size": 710872,
+    "startup_time_ms": 10.158412,
+    "config_parse_time_ms": 0.0,
+    "peak_rss_kb": 0,
+    "ctl_response_time_ms": 12.010587,
+    "cpu_user_time_ms": 0.0,
+    "cpu_sys_time_ms": 0.0
+  },
+  {
+    "os": "debian",
+    "openntpd_version": "6.2p3",
+    "binary_source": "git",
+    "binary_size": 710872,
+    "startup_time_ms": 9.758704,
+    "config_parse_time_ms": 0.0,
+    "peak_rss_kb": 0,
+    "ctl_response_time_ms": 18.207291,
+    "cpu_user_time_ms": 0.0,
+    "cpu_sys_time_ms": 0.0
+  },
+  {
+    "os": "ubuntu",
+    "openntpd_version": "6.2p3",
+    "binary_source": "git",
+    "binary_size": 710872,
+    "startup_time_ms": 8.897106,
+    "config_parse_time_ms": 0.0,
+    "peak_rss_kb": 0,
+    "ctl_response_time_ms": 10.448039,
+    "cpu_user_time_ms": 0.0,
+    "cpu_sys_time_ms": 0.0
+  },
+  {
+    "os": "debian",
+    "openntpd_version": "6.8p1",
+    "binary_source": "git",
+    "binary_size": 710872,
+    "startup_time_ms": 9.049495,
+    "config_parse_time_ms": 0.0,
+    "peak_rss_kb": 0,
+    "ctl_response_time_ms": 9.880199,
+    "cpu_user_time_ms": 0.0,
+    "cpu_sys_time_ms": 0.0
+  },
+  {
+    "os": "ubuntu",
+    "openntpd_version": "6.8p1",
+    "binary_source": "git",
+    "binary_size": 710872,
+    "startup_time_ms": 8.967123,
+    "config_parse_time_ms": 0.0,
+    "peak_rss_kb": 0,
+    "ctl_response_time_ms": 10.294997,
+    "cpu_user_time_ms": 0.0,
+    "cpu_sys_time_ms": 0.0
+  },
+  {
+    "os": "debian",
+    "openntpd_version": "7.9p1",
+    "binary_source": "git",
+    "binary_size": 710872,
+    "startup_time_ms": 11.070098999999999,
+    "config_parse_time_ms": 0.0,
+    "peak_rss_kb": 0,
+    "ctl_response_time_ms": 11.728226,
+    "cpu_user_time_ms": 0.0,
+    "cpu_sys_time_ms": 0.0
+  },
+  {
+    "os": "ubuntu",
+    "openntpd_version": "7.9p1",
+    "binary_source": "git",
+    "binary_size": 710872,
+    "startup_time_ms": 9.651308,
+    "config_parse_time_ms": 0.0,
+    "peak_rss_kb": 0,
+    "ctl_response_time_ms": 9.742808,
+    "cpu_user_time_ms": 0.0,
+    "cpu_sys_time_ms": 0.0
+  }
+]

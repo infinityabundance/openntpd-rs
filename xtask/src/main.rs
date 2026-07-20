@@ -21,6 +21,8 @@ fn main() -> ExitCode {
         eprintln!("  ctl-test      Run ntpctl integration tests against Docker oracles");
         eprintln!("  build-musl    Cross-compile musl binaries");
         eprintln!("  compat        Multi-version cross-compatibility test suite");
+        eprintln!("  compat-crates Multi-version cross-compatibility test suite (crates.io)");
+        eprintln!("  perf          Performance comparison harness");
         return ExitCode::FAILURE;
     }
 
@@ -79,6 +81,18 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             }
         }
+        "compat-crates" => {
+            if let Err(e) = xtask::compat_crates::run(&args[2..]) {
+                eprintln!("compat-crates failed: {e}");
+                return ExitCode::FAILURE;
+            }
+        }
+        "perf" => {
+            if let Err(e) = xtask::perf::run() {
+                eprintln!("perf failed: {e}");
+                return ExitCode::FAILURE;
+            }
+        }
         "help" | "--help" | "-h" => {
             eprintln!("Usage: cargo xtask <command>");
             eprintln!();
@@ -93,6 +107,8 @@ fn main() -> ExitCode {
             eprintln!("  ctl-test      Run ntpctl integration tests against Docker oracles");
             eprintln!("  build-musl    Cross-compile musl binaries");
             eprintln!("  compat        Multi-version cross-compatibility test suite");
+            eprintln!("  compat-crates Multi-version cross-compatibility test suite (crates.io)");
+            eprintln!("  perf          Performance comparison harness");
             return ExitCode::SUCCESS;
         }
         other => {

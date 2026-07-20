@@ -16,9 +16,11 @@
 pub mod build_musl;
 pub mod check;
 pub mod compat;
+pub mod compat_crates;
 pub mod ctl_integration;
 pub mod forensic;
 pub mod gen;
 pub mod no_orig;
 pub mod oracle;
 pub mod parity;
+pub mod perf;
