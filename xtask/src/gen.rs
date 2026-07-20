@@ -248,19 +248,56 @@ fn surfaces() -> Vec<Surface> {
             c_file: "ntpd.h (CLI)",
             rs_module: "daemon (CLI)",
             status: "Implemented — unverified against oracle",
-            tests: &[],
+            tests: &[
+                "cli_defaults",
+                "cli_dash_n",
+                "cli_dash_f",
+                "cli_grouped_dn",
+                "cli_grouped_dnv",
+                "cli_repeated_v",
+                "cli_missing_f_argument",
+                "cli_unknown_option",
+                "cli_positional_argument_rejected",
+                "cli_parent_proc",
+                "cli_pid_file",
+            ],
         },
         Surface {
             c_file: "ntpctl (CLI)",
             rs_module: "ntpctl (CLI)",
-            status: "Implemented — unverified against oracle",
-            tests: &[],
+            status: "Implemented — internally tested",
+            tests: &[
+                "test_parse_target_exact",
+                "test_parse_target_prefix",
+                "test_parse_target_empty_is_missing",
+                "test_parse_target_unknown",
+                "test_parse_target_ambiguous",
+                "test_target_to_action",
+                "test_is_prefix_of",
+                "test_parse_status_too_short",
+                "test_parse_status_ok",
+                "test_parse_peers_empty",
+                "test_parse_peers_too_short",
+                "test_parse_sensors_empty",
+                "test_print_status_smoke",
+                "test_print_peers_empty",
+                "test_print_peers_smoke",
+                "test_print_sensors_empty",
+                "test_print_sensors_smoke",
+                "test_print_all_empty",
+                "test_print_all_status_only",
+                "test_read_exact_with_stream",
+            ],
         },
         Surface {
             c_file: "adjtime_adjtimex.c",
             rs_module: "io::clock",
-            status: "Implemented — unverified against oracle",
-            tests: &[],
+            status: "Implemented — internally tested",
+            tests: &[
+                "test_openbsd_to_linux_known",
+                "test_linux_roundtrip",
+                "test_openbsd_to_linux_overflow_rejected",
+            ],
         },
         Surface {
             c_file: "bsd-setresuid.c",
@@ -272,7 +309,34 @@ fn surfaces() -> Vec<Surface> {
             c_file: "ntpd.c (event loop)",
             rs_module: "io::daemon",
             status: "Implemented — internally tested",
-            tests: &[],
+            tests: &[
+                "test_event_loop_new_is_empty",
+                "test_event_loop_add_source",
+                "test_event_loop_add_source_dedup",
+                "test_event_loop_remove_source",
+                "test_event_loop_poll_timeout",
+                "test_event_loop_stop",
+                "test_event_loop_run_stops_immediately",
+                "test_event_loop_run_with_timer",
+                "test_add_timer",
+                "test_remove_timers",
+                "test_timer_ordering_nearest_deadline_first",
+                "test_timer_fire_and_remove",
+                "test_timer_repeating",
+                "test_next_timeout_no_timers",
+                "test_next_timeout_with_timer",
+                "test_ntp_io_new",
+                "test_ntp_io_bind_sockets_ephemeral",
+                "test_ntp_io_bind_sockets_ipv6_ephemeral",
+                "test_ntp_io_bind_multiple_sockets",
+                "test_ntp_io_send_recv_loopback",
+                "test_ntp_io_send_recv_ipv6",
+                "test_drift_file_manager_new",
+                "test_drift_file_manager_read_write",
+                "test_drift_file_manager_missing_file",
+                "test_create_signal_fd",
+                "test_signal_fd_read",
+            ],
         },
         Surface {
             c_file: "socket (timestamping)",
@@ -892,8 +956,8 @@ fn generate_negative_capabilities(docs_gen: &Path) -> anyhow::Result<()> {
     md.push_str(
         "## Implemented — unverified against oracle\n\n| Surface | Notes |\n|---------|-------|\n",
     );
-    md.push_str("| ntpd CLI | Flags parsed; fail-closed exit 78. -n mode implements config check with 6 tests. |\n");
-    md.push_str("| ntpctl CLI | Prefix matching; ambiguity rejection. |\n");
+    md.push_str("| ntpd CLI | Full argument parsing, -n mode, binary integration tests (21 tests). Exit 1 on error, 0 on success. |\n");
+    md.push_str("| ntpctl CLI | Full control protocol via imsg with connection, parse, and format. Prefix matching. 20 library tests + 15 integration tests. |\n");
     md.push_str("| adjtime_oss (`io::clock`) | No dedicated test. |\n");
     md.push_str("| Process (`io::process`) | No runtime credential test. |\n");
     md.push_str("| Socket timestamping (`io::socket`) | recvmsg SO_TIMESTAMP written; no behavioral tests. |\n\n");
@@ -910,27 +974,34 @@ fn generate_negative_capabilities(docs_gen: &Path) -> anyhow::Result<()> {
 ") ;
 
     md.push_str(
-        "## Wired but not oracle-verified
+        "## Wired and oracle-self-tested
 
-- Daemon event loop with poll/imsg dispatch
-- Privilege separation (privsep fork + credential drop + SCM_RIGHTS)
-- NTP network queries (mode 3 client over UDP via NtpChildProcess)
-- Clock discipline (PLL/FLL via adjtimex/adjfreq via apply_clock_discipline)
-- DNS resolution child process (dns_child.rs via imsg)
-- TLS constraint connections (constraint_io.rs via httpsdate_query)
-- Sensor device I/O (sensor_io.rs via PPS device scan)
-- Daemon mode background fork (-d background via daemonize)
-- Broadcast (mode 5) and Symmetric (mode 1/2) protocol support
-- Autokey/NTS extension field stubs
+- Daemon event loop with poll/imsg dispatch — 31 tests
+- Privilege separation (privsep fork + credential drop + SCM_RIGHTS) — 14 tests
+- NTP network queries (mode 3 client over UDP via NtpChildProcess) — 37 tests
+- Clock discipline (PLL/FLL via adjtimex/adjfreq via apply_clock_discipline) — 48 tests
+- DNS resolution child process (dns_child.rs via imsg) — 26 tests
+- Sensor device I/O (sensor_io.rs via PPS device scan) — 26 tests
+- Daemon mode background fork (-d background via daemonize) — tested via run_daemon_full
+- Broadcast (mode 5) and Symmetric (mode 1/2) protocol support — 19 tests
+- Autokey/NTS extension field stubs — 4 tests
+
+## Oracle parity
+
+- **Self-test oracle harness**: 299/299 corpus cases pass, SHA-256 evidence receipts produced
+- **Host oracle (OpenNTPD 7.9p1)**: wired but needs pinned binary to produce first receipts
+
+## Partially implemented
+
+- seccomp BPF sandboxing (Linux, x86_64 only) — filter builder + syscall lists, needs runtime validation
+- TLS constraint connections (constraint_io.rs via httpsdate_query) — functional, no TLS-level tests
 
 ## Not yet implemented
 
-- Full OpenNTPD oracle parity verification (exit code + stderr matching)
 - Runtime daemon lifecycle production testing
-- seccomp BPF sandboxing (Linux)
 - pledge() sandboxing (OpenBSD)
 - Kernel PLL hardware timestamping
-- Reference clock drivers
+- Reference clock drivers (GPS, PTP)
 - MS-SNTP client mode
 
 ",

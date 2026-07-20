@@ -964,6 +964,7 @@ struct Receipt {
     rust_binary: BinaryInfo,
     oracle_binary: Option<BinaryInfo>,
     oracle_manifest: Option<OracleManifest>,
+    oracle_image: Option<String>,
     results: Vec<CaseReceipt>,
     summary: Summary,
 }
@@ -1333,7 +1334,7 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
         .collect();
 
     let receipt = Receipt {
-        schema_version: 2,
+        schema_version: 3,
         mode: mode.to_string(),
         timestamp: ts.clone(),
         corpus_digest: corpus_digest(),
@@ -1350,6 +1351,7 @@ pub fn run(args: &[String]) -> anyhow::Result<()> {
                 sha256: sha.clone(),
             }),
         oracle_manifest,
+        oracle_image: oracle_image.as_ref().cloned(),
         results: case_receipts,
         summary: Summary {
             passed,

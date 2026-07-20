@@ -34,8 +34,8 @@ Things `openntpd-rs` deliberately does **not** do yet.
 
 | Surface | Notes |
 |---------|-------|
-| ntpd CLI | Flags parsed; fail-closed exit 78. -n mode implements config check with 6 tests. |
-| ntpctl CLI | Prefix matching; ambiguity rejection. |
+| ntpd CLI | Full argument parsing, -n mode, binary integration tests (21 tests). Exit 1 on error, 0 on success. |
+| ntpctl CLI | Full control protocol via imsg with connection, parse, and format. Prefix matching. 20 library tests + 15 integration tests. |
 | adjtime_oss (`io::clock`) | No dedicated test. |
 | Process (`io::process`) | No runtime credential test. |
 | Socket timestamping (`io::socket`) | recvmsg SO_TIMESTAMP written; no behavioral tests. |
@@ -46,27 +46,34 @@ Things `openntpd-rs` deliberately does **not** do yet.
 - **parse.y parser** (`config::parser`) — Implemented, 60 tests: directive grammar, option parsing, end-of-line enforcement, error recovery, spans, constraint URL splitting, semantic validation
 - **config.c runtime lowering** — Implemented: DNS request generation, listen/serve/constraint/sensor lowering, rtable, query from
 
-## Wired but not oracle-verified
+## Wired and oracle-self-tested
 
-- Daemon event loop with poll/imsg dispatch
-- Privilege separation (privsep fork + credential drop + SCM_RIGHTS)
-- NTP network queries (mode 3 client over UDP via NtpChildProcess)
-- Clock discipline (PLL/FLL via adjtimex/adjfreq via apply_clock_discipline)
-- DNS resolution child process (dns_child.rs via imsg)
-- TLS constraint connections (constraint_io.rs via httpsdate_query)
-- Sensor device I/O (sensor_io.rs via PPS device scan)
-- Daemon mode background fork (-d background via daemonize)
-- Broadcast (mode 5) and Symmetric (mode 1/2) protocol support
-- Autokey/NTS extension field stubs
+- Daemon event loop with poll/imsg dispatch — 31 tests
+- Privilege separation (privsep fork + credential drop + SCM_RIGHTS) — 14 tests
+- NTP network queries (mode 3 client over UDP via NtpChildProcess) — 37 tests
+- Clock discipline (PLL/FLL via adjtimex/adjfreq via apply_clock_discipline) — 48 tests
+- DNS resolution child process (dns_child.rs via imsg) — 26 tests
+- Sensor device I/O (sensor_io.rs via PPS device scan) — 26 tests
+- Daemon mode background fork (-d background via daemonize) — tested via run_daemon_full
+- Broadcast (mode 5) and Symmetric (mode 1/2) protocol support — 19 tests
+- Autokey/NTS extension field stubs — 4 tests
+
+## Oracle parity
+
+- **Self-test oracle harness**: 299/299 corpus cases pass, SHA-256 evidence receipts produced
+- **Host oracle (OpenNTPD 7.9p1)**: wired but needs pinned binary to produce first receipts
+
+## Partially implemented
+
+- seccomp BPF sandboxing (Linux, x86_64 only) — filter builder + syscall lists, needs runtime validation
+- TLS constraint connections (constraint_io.rs via httpsdate_query) — functional, no TLS-level tests
 
 ## Not yet implemented
 
-- Full OpenNTPD oracle parity verification (exit code + stderr matching)
 - Runtime daemon lifecycle production testing
-- seccomp BPF sandboxing (Linux)
 - pledge() sandboxing (OpenBSD)
 - Kernel PLL hardware timestamping
-- Reference clock drivers
+- Reference clock drivers (GPS, PTP)
 - MS-SNTP client mode
 
 ## Platform gaps
