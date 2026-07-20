@@ -1,0 +1,3 @@
+/home/one/openntpd-rs/target/parity/debug/ntpd: OpenNTPD-rs (forensic reconstruction)
+/home/one/openntpd-rs/target/parity/debug/ntpd: 16:27: wildcard '*' is not valid for constraint URL
+
