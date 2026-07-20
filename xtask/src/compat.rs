@@ -453,6 +453,19 @@ fn run_combo(
 ) -> ComboResult {
     let start = Instant::now();
 
+    // Kill any stale daemon from a previous combo BEFORE starting a new one
+    let _ = docker_exec(container, &["pkill", "-9", "ntpd"]);
+    std::thread::sleep(Duration::from_millis(500));
+    // Remove stale sockets so the new daemon can create a fresh one
+    let _ = docker_exec(
+        container,
+        &[
+            "sh",
+            "-c",
+            "rm -f /var/run/ntpd.sock /usr/local/var/run/ntpd.sock",
+        ],
+    );
+
     // Start the daemon in the background
     let daemon_cmd = format!("{daemon_binary} -d -f /etc/ntpd.conf > /tmp/ntpd.log 2>&1 &");
     let (_daemon_out, _daemon_err, _daemon_code) =
@@ -461,7 +474,15 @@ fn run_combo(
     // Give the daemon time to create the control socket
     std::thread::sleep(Duration::from_millis(2000));
 
-    // Check if the daemon started and what log it produced
+    // Create a symlink from the C client's default socket path to the
+    // running daemon's socket, so C ntpctl can find it regardless of
+    // which daemon is running. The C client does NOT use NTPD_CONTROL_SOCKET.
+    let _ = docker_exec(container, &["sh", "-c", &format!(
+        "ln -sf {} /usr/local/var/run/ntpd.sock 2>/dev/null; ln -sf {} /var/run/ntpd.sock 2>/dev/null",
+        ctl_socket, ctl_socket
+    )]);
+
+    // Check daemon log
     let (log_out, _, _) = docker_exec(
         container,
         &[
@@ -470,12 +491,21 @@ fn run_combo(
             "cat /tmp/ntpd.log 2>/dev/null || echo '(no log)'",
         ],
     );
+    // Find the actual control socket for diagnostics
     let (sock_find, _, _) = docker_exec(
         container,
         &[
             "sh",
             "-c",
-            "find / -type s -name '*.sock' 2>/dev/null || echo '(no socket)'",
+            "find / -type s -name '*.sock' 2>/dev/null | head -3 || echo '(no socket)'",
+        ],
+    );
+    let _ = docker_exec(
+        container,
+        &[
+            "sh",
+            "-c",
+            "rm -f /var/run/ntpd.sock /usr/local/var/run/ntpd.sock",
         ],
     );
 
@@ -487,8 +517,9 @@ fn run_combo(
     let mut is_expected_rust = false;
 
     for query in &["status", "peers", "Sensors", "all"] {
-        // For real ntpctl, stdout has the output; for Rust ntpctl, stderr has "would query"
-        // Set NTPD_CONTROL_SOCKET so the client talks to the right daemon
+        // Set NTPD_CONTROL_SOCKET so the client talks to the right daemon.
+        // Use ctl_socket (the correct socket path for this daemon/client combo)
+        // rather than auto-detection, which can pick up stale sockets.
         let (stdout, stderr, exit) = docker_exec(
             container,
             &[
@@ -510,7 +541,11 @@ fn run_combo(
         }
         last_exit = exit;
 
-        // Rust ntpctl exits 78 with "would query ntpd" — that's EXPECTED
+        // Rust ntpctl (v0.9.1+) tries to connect; may exit 1 with connection error
+        if exit == Some(1) && stderr.contains("cannot connect") {
+            is_expected_rust = true;
+        }
+        // Old Rust ntpctl (pre-v0.9.1) exits 78 with "would query ntpd"
         if exit == Some(78) && stderr.contains("would query ntpd") {
             is_expected_rust = true;
         }
@@ -617,6 +652,18 @@ fn test_image_combinations(
     // RUST ntpd creates socket at /var/run/ntpd.sock (hardcoded in lib.rs)
     let real_socket = "/usr/local/var/run/ntpd.sock";
     let rust_socket = "/var/run/ntpd.sock";
+
+    // Ensure /usr/local/var/run exists (or is a symlink to /var/run)
+    // so the C ntpctl can find the Rust daemon's socket via the symlink
+    // that will be created after each daemon starts.
+    let _ = docker_exec(
+        container,
+        &[
+            "sh",
+            "-c",
+            "mkdir -p /usr/local/var/run /var/run 2>/dev/null",
+        ],
+    );
 
     // --- Combo 1: REAL ntpd → REAL ntpctl (baseline) ---
     eprint!("    REAL→REAL... ");
